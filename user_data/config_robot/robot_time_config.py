@@ -5,5 +5,6 @@ config = {
     "relay_time": 140,
     "earth_analysis_time": 600,
     "uplink_time": 20,
+    "nap_time": 60*15,
     "measurement_time": 300
 }

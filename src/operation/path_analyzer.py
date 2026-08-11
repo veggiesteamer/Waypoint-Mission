@@ -36,11 +36,64 @@ def analyze_path(path):
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     unit_vectors = vectors / norms
 """    
-def turn_analysis(path, angle_threshold_deg=10, map_resolution=1):
+def _incoming_outgoing_headings(path, map_resolution, window_m):
+    """
+    Heading vectors at each path vertex, estimated by walking window_m/2 meters
+    backward and forward *along the existing path polyline* (following its
+    actual vertices, never a straight-line shortcut off it) to get an incoming
+    and an outgoing direction. Comparing these -- instead of two adjacent raw
+    grid steps, which on an 8-connected planning grid are only ~0.2-0.3 m long
+    -- avoids flagging single-pixel staircase alternation (A* alternating
+    between a straight and a diagonal move to hug a non-axis-aligned line) as
+    a turn. Since both points are literal vertices of the original, already
+    obstacle-free path, this never risks cutting a corner over an obstacle --
+    it only changes how far apart the two points are that get compared.
+
+    Returns (incoming, outgoing, valid), all aligned to path vertices. valid[i]
+    is False where a full window isn't available (near the path ends).
+    """
+    pts = np.array(path, dtype=float)
+    n = len(pts)
+    idx = np.arange(n)
+
+    seg_vectors = np.diff(pts, axis=0)
+    seg_lengths_m = np.linalg.norm(seg_vectors, axis=1) / map_resolution
+    cum_dist_m = np.concatenate([[0.0], np.cumsum(seg_lengths_m)])
+
+    half = window_m / 2.0
+    back_idx = np.searchsorted(cum_dist_m, cum_dist_m - half, side="right") - 1
+    fwd_idx = np.searchsorted(cum_dist_m, cum_dist_m + half, side="left")
+
+    valid = (back_idx >= 0) & (fwd_idx < n) & (back_idx < idx) & (fwd_idx > idx)
+
+    back_idx_c = np.clip(back_idx, 0, n - 1)
+    fwd_idx_c = np.clip(fwd_idx, 0, n - 1)
+
+    in_vec = pts[idx] - pts[back_idx_c]
+    out_vec = pts[fwd_idx_c] - pts[idx]
+
+    in_norm = np.linalg.norm(in_vec, axis=1)
+    out_norm = np.linalg.norm(out_vec, axis=1)
+    valid &= (in_norm > 0) & (out_norm > 0)
+
+    incoming = np.zeros((n, 2))
+    outgoing = np.zeros((n, 2))
+    safe_in_norm = np.where(in_norm > 0, in_norm, 1)
+    safe_out_norm = np.where(out_norm > 0, out_norm, 1)
+    incoming[valid] = (in_vec / safe_in_norm[:, None])[valid]
+    outgoing[valid] = (out_vec / safe_out_norm[:, None])[valid]
+
+    return incoming, outgoing, valid
+
+
+def turn_analysis(path, angle_threshold_deg=10, map_resolution=1, window_m=1.0):
     """
     map_resolution: pixels per meter of the occupancy grid the path was planned on.
     The A* path is in pixel/grid coordinates, so all distance metrics are converted
     to meters by dividing by map_resolution (angles are scale-invariant, no conversion needed).
+    window_m: baseline distance (see _incoming_outgoing_headings) used to detect a
+    turn -- keep this well above the raw grid step size (1/map_resolution) so
+    single-pixel staircase moves aren't counted as turns.
     """
     pathpoints = np.array(path)
     amount_pathpoints = len(path)
@@ -49,21 +102,12 @@ def turn_analysis(path, angle_threshold_deg=10, map_resolution=1):
     vectors = np.diff(np.array(path), axis=0)
     distances = np.linalg.norm(vectors, axis=1) / map_resolution
 
-    # Normalize vectors
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    unit_vectors = vectors / norms
-
     ### Direction changes
-    angles = []
-    change_indices = []
+    incoming, outgoing, valid = _incoming_outgoing_headings(path, map_resolution, window_m)
+    dots = np.clip(np.sum(incoming * outgoing, axis=1), -1, 1)
+    angles = np.degrees(np.arccos(dots))
 
-    for i in range(len(unit_vectors)-1):
-        dot = np.clip(np.dot(unit_vectors[i], unit_vectors[i+1]), -1, 1)
-        angle = np.degrees(np.arccos(dot))
-        angles.append(angle)
-
-        if angle > angle_threshold_deg:
-            change_indices.append(i+1)
+    change_indices = np.where(valid & (angles > angle_threshold_deg))[0].tolist()
 
     # --- Distances between direction changes ---
     segment_boundaries = [0] + change_indices + [len(pathpoints)-1]
@@ -97,11 +141,12 @@ def turn_analysis(path, angle_threshold_deg=10, map_resolution=1):
     }
 
 
-def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10):
+def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, window_m=1.0):
     """
     Split the path into drive legs of ~step_m meters each (the distance the rover
     covers before stopping to take a measurement / downlink), and count how many
-    turns (direction changes above angle_threshold_deg) occur within each leg.
+    turns (direction changes above angle_threshold_deg, measured over a window_m
+    baseline -- see _incoming_outgoing_headings/turn_analysis) occur within each leg.
 
     Returns a list of {"distance": meters, "turns": count}, one entry per leg,
     for feeding into conops_planner.build_mission.
@@ -110,15 +155,11 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10):
     vectors = np.diff(pts, axis=0)
     seg_lengths = np.linalg.norm(vectors, axis=1) / map_resolution
 
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    unit_vectors = vectors / norms
+    incoming, outgoing, valid = _incoming_outgoing_headings(path, map_resolution, window_m)
+    dots = np.clip(np.sum(incoming * outgoing, axis=1), -1, 1)
+    angles = np.degrees(np.arccos(dots))
 
-    turn_at = np.zeros(len(vectors), dtype=bool)
-    for i in range(len(unit_vectors)-1):
-        dot = np.clip(np.dot(unit_vectors[i], unit_vectors[i+1]), -1, 1)
-        angle = np.degrees(np.arccos(dot))
-        if angle > angle_threshold_deg:
-            turn_at[i+1] = True
+    turn_at = (valid & (angles > angle_threshold_deg))[:len(vectors)]
 
     segments = []
     acc_dist = 0.0
@@ -314,3 +355,95 @@ def compute_waypoints(path, step):
         distances.append(float(dist_since_wp))
 
     return waypoints, distances
+
+
+def _line_is_clear(grid, r0, c0, r1, c1):
+    """
+    Whether the straight line from (r0,c0) to (r1,c1) stays entirely in free
+    cells (grid == 0). Oversamples 2x per cell along the line's dominant axis
+    so no crossed cell is skipped.
+    """
+    dr, dc = r1 - r0, c1 - c0
+    length_cells = max(abs(dr), abs(dc))
+    if length_cells == 0:
+        return grid[int(round(r0)), int(round(c0))] == 0
+
+    num_samples = int(length_cells) * 2 + 1
+    ts = np.linspace(0.0, 1.0, num_samples)
+    rows = np.clip(np.round(r0 + dr * ts).astype(int), 0, grid.shape[0] - 1)
+    cols = np.clip(np.round(c0 + dc * ts).astype(int), 0, grid.shape[1] - 1)
+    return bool(np.all(grid[rows, cols] == 0))
+
+
+def _simplify_segment_line_of_sight(path, grid):
+    """
+    Greedily reduce path to the fewest straight segments such that every
+    kept segment's straight line stays entirely in free cells of grid --
+    the same occupancy grid the path was planned on, so the simplified path
+    can never cut through an obstacle border the raw A* path avoided.
+
+    For each anchor point, binary-searches the farthest path index with a
+    verified-clear line of sight and jumps straight there; safety never
+    depends on the search finding the true global farthest point (every
+    kept point is independently re-verified), only how much the path gets
+    simplified does -- a correctness/optimality tradeoff, not a safety one.
+    Runs in O(n log n) rather than the O(n^2) a naive point-by-point
+    extension would risk on long, mostly-open paths.
+    """
+    if len(path) <= 2:
+        return list(path)
+
+    simplified = [path[0]]
+    anchor_idx = 0
+    n = len(path)
+
+    while anchor_idx < n - 1:
+        r0, c0 = path[anchor_idx]
+        lo, hi = anchor_idx + 1, n - 1
+        farthest = anchor_idx + 1  # the very next raw-path point is always reachable
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            r1, c1 = path[mid]
+            if _line_is_clear(grid, r0, c0, r1, c1):
+                farthest = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        simplified.append(path[farthest])
+        anchor_idx = farthest
+
+    return simplified
+
+
+def simplify_path_line_of_sight(path, grid, pinned_points=None):
+    """
+    Line-of-sight path simplification (see _simplify_segment_line_of_sight)
+    that removes the grid-staircase zigzag from an A* path while never
+    letting a simplified segment cross an obstacle cell.
+
+    pinned_points: optional ordered list of points from `path` (e.g. the
+    mission waypoints a multi-leg route was required to pass through) that
+    must remain exact vertices of the simplified output -- simplification
+    is run independently between each consecutive pair of pinned points, so
+    it can never skip over one even if a straight shortcut past it would
+    otherwise be clear.
+    """
+    path = list(path)
+    if pinned_points is None or len(pinned_points) <= 2:
+        return _simplify_segment_line_of_sight(path, grid)
+
+    pinned_indices = [0]
+    search_from = 0
+    for point in pinned_points[1:]:
+        idx = path.index(tuple(point), search_from)
+        pinned_indices.append(idx)
+        search_from = idx
+
+    simplified = [path[0]]
+    for start_idx, end_idx in zip(pinned_indices[:-1], pinned_indices[1:]):
+        leg_simplified = _simplify_segment_line_of_sight(path[start_idx:end_idx + 1], grid)
+        simplified.extend(leg_simplified[1:])  # drop duplicate junction point
+
+    return simplified

@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 .env
+
+# generated run outputs -- regeneratable by running the scripts, not source
+experiments/marius_hills/
+experiments/missions/
+experiments/path_planning_demo/
+experiments/scenario_comparison/

@@ -19,6 +19,7 @@ def generate_waypoint_tasks(start_time,
                             earth_analysis_time,
                             measurement_time,
                             uplink_time,
+                            nap_time,
                             config_power_robot):
 
     tasks = []
@@ -59,7 +60,7 @@ def generate_waypoint_tasks(start_time,
     travel_time * config_power_robot["locomotion_power"]
     '''
 
-    nap_time = 200
+    nap_time = nap_time
     tasks.append(Task("nap", "rover", t, t + nap_time))
     t += nap_time
 
@@ -113,6 +114,7 @@ def build_mission(segments, velocity, config_time, config_power_robot):
             config_time["earth_analysis_time"],
             config_time["measurement_time"],
             config_time["uplink_time"],
+            config_time["nap_time"],
             config_power_robot
         )
 
@@ -150,7 +152,12 @@ def plot_timeline2(tasks):
 
     plt.show()
 
-def plot_timeline(tasks):
+def plot_timeline(tasks, show=True, velocity=None):
+    """
+    velocity: rover drive speed [m/s]. If given, each "drive" bar is
+    annotated with the distance covered in that leg (distance = velocity *
+    duration) and the axes title shows the cumulative distance driven.
+    """
     # collect unique task names
     names = set(task.name for task in tasks)
     names = names = list(dict.fromkeys(task.name for task in tasks))
@@ -160,6 +167,7 @@ def plot_timeline(tasks):
 
     fig, ax = plt.subplots(figsize=(14,5))
 
+    cumulative_distance_m = 0.0
     for task in tasks:
         unit = 60 #transform from seconds to minutes
         start_time = task.start / 60
@@ -172,12 +180,23 @@ def plot_timeline(tasks):
             (y - 0.4, 0.5)
         )
 
+        if velocity is not None and task.name == "drive":
+            leg_distance_m = velocity * (task.end - task.start)
+            cumulative_distance_m += leg_distance_m
+            ax.annotate(f"{leg_distance_m:.0f} m", (start_time + duration_time / 2, y),
+                        ha="center", va="center", fontsize=8)
+
     ax.set_yticks(list(y_map.values()))
     ax.set_yticklabels(list(y_map.keys()))
     ax.set_xlabel("Time [min]")
+    if velocity is not None:
+        ax.set_title(f"Total distance driven: {cumulative_distance_m:.0f} m")
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+
+    return fig
 
 
 

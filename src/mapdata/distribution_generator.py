@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Polygon as MplPolygon
 from matplotlib.collections import PatchCollection
+from matplotlib.path import Path as MplPath
 
 
 def center_radius_generator_distribution(map_distance_meter,map_resolution,keep_out_zone,robot_size,k,b,Dmin,Dmax):
@@ -40,7 +41,7 @@ def center_radius_generator_distribution(map_distance_meter,map_resolution,keep_
 
 def rasterize_circles(center_radius, map_size, map_resolution):
 
-    grid_size = map_resolution
+    grid_size = int(round(map_resolution))
     cell_size = map_size / grid_size
     grid = np.zeros((grid_size, grid_size), dtype=int)
 
@@ -66,6 +67,44 @@ def rasterize_circles(center_radius, map_size, map_resolution):
                     grid[j, i] = 1
     
     return grid
+
+def rasterize_polygon(vertices_norm, map_size, map_resolution):
+    """
+    Rasterize a single closed polygon (e.g. the pit outline), given as
+    normalized [0, 1] map-coordinate vertices, into the same binary grid
+    convention as rasterize_circles (cell marked if its center falls
+    inside the polygon).
+    """
+    grid_size = int(round(map_resolution))
+    cell_size = map_size / grid_size
+
+    poly_path = MplPath(vertices_norm * map_size)
+
+    cell_centers = (np.arange(grid_size) + 0.5) * cell_size
+    xx, yy = np.meshgrid(cell_centers, cell_centers)
+    points = np.column_stack((xx.ravel(), yy.ravel()))
+
+    inside = poly_path.contains_points(points).reshape(grid_size, grid_size)
+    return inside.astype(int)
+
+
+def downsample_grid_max(grid, factor):
+    """
+    Shrink a binary occupancy grid by max-pooling factor x factor blocks, so any
+    obstacle pixel in a block marks the whole coarse cell as blocked. Used to get
+    a much smaller/faster grid for path planning while keeping the full-resolution
+    grid for visualization and physical stats (e.g. grid_occupation).
+    """
+    if factor <= 1:
+        return grid
+
+    h, w = grid.shape
+    h_crop = (h // factor) * factor
+    w_crop = (w // factor) * factor
+    cropped = grid[:h_crop, :w_crop]
+
+    reshaped = cropped.reshape(h_crop // factor, factor, w_crop // factor, factor)
+    return reshaped.max(axis=(1, 3))
 
 def distribution_vizualization2(map_distance_meter,map_resolution,data, ABOVE_THREASHOLD):
     
@@ -158,7 +197,8 @@ def distribution_vizualization(map_distance_meter, map_resolution, data, ABOVE_T
     return ax
 
 def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
-                               show_MHP=True, show_craters=True, show_boulders=True):
+                               show_MHP=True, show_craters=True, show_boulders=True,
+                               pit_outline=None, show_pit=True):
 
     centers = data["center"] * map_distance_meter
     radii = data["radius"]
@@ -198,6 +238,10 @@ def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
 
     if show_boulders:
         add_layer(types == "boulder", color_visible="red", color_small="salmon")
+
+    if show_pit and pit_outline is not None:
+        pit_m = pit_outline * map_distance_meter
+        ax.add_patch(MplPolygon(pit_m, closed=True, facecolor="black", edgecolor="black", alpha=0.8))
 
     ax.set_aspect('equal')
     ax.set_xlim(0,map_distance_meter)

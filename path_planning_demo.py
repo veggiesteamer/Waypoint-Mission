@@ -10,6 +10,8 @@ import time
 import json
 from pathlib import Path
 
+OUTPUT_DIR = Path("experiments/path_planning_demo")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Run A* Algorithm
 
@@ -39,7 +41,7 @@ ABOVE_DETECTION_THREASHOLD = 2
 
 # Define start and goal positions (y,x)
 start_pos = (2,2)
-goal_pos = (map_distance_meter*map_resolution*95/100,map_distance_meter*map_resolution*95/100)
+goal_pos = (int(map_distance_meter*map_resolution*95/100),int(map_distance_meter*map_resolution*95/100))
 
 # Generate a crater and boulder distribution
 #it = range(1)
@@ -63,8 +65,9 @@ resolutions = [5]#range(1)
 #ax = distribution_generator.distribution_vizualization(map_distance_meter, map_resolution,lunar_distribution_data,ABOVE_DETECTION_THREASHOLD)
 ax = distribution_generator.distribution_vizualization_layers(map_distance_meter, map_resolution, lunar_distribution_data, show_MHP=False, show_craters=True, show_boulders=True)
 
-ax.figure.savefig(f"dist_{map_resolution}.png", dpi=300)
-plt.close(ax.figure)
+fig = plt.gcf()
+fig.savefig(OUTPUT_DIR / f"dist_{map_resolution}.png", dpi=300)
+plt.close(fig)
 
 for map_resolution in resolutions:
 
@@ -73,8 +76,9 @@ for map_resolution in resolutions:
     ratio = np.sum(grid) / grid.size
 #grid = distribution_generator.mask_generator(map_distance_meter,map_resolution,centers, radii,blowup)
     ax = distribution_generator.map_vizalization(grid,map_resolution,map_distance_meter)
-    ax.figure.savefig(f"map_{map_resolution}.png", dpi=300)
-    plt.close(ax.figure)
+    fig = plt.gcf()
+    fig.savefig(OUTPUT_DIR / f"map_{map_resolution}.png", dpi=300)
+    plt.close(fig)
 # Call A* to calculate shortest path, path is a List[Tuple[int, int]]
     path = path_planning_astar.find_path_astar(grid,start_pos, goal_pos)
     path_planning_astar.visualize_path(grid,path)

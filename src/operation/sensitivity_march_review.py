@@ -34,7 +34,7 @@ def run_simulation(config):
 
     # Define start and goal positions (y,x)
     start_pos = (2,2)
-    goal_pos = (map_distance_meter*map_resolution*95/100,map_distance_meter*map_resolution*95/100)
+    goal_pos = (int(map_distance_meter*map_resolution*95/100),int(map_distance_meter*map_resolution*95/100))
 
     # example: generate map + path
     # Generate a crater and boulder distribution

@@ -1,5 +1,5 @@
 config = {
-    "num_runs": 50,
+    "num_runs": 5,
     "map_size_m": 100,
     "resolution": 5,
     "robot_footprint": 0,

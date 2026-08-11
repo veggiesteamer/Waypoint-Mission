@@ -3,6 +3,10 @@ from user_data.config_map import baseline_config
 from src.operation import scenarios_march_review
 import json
 import pprint
+from pathlib import Path
+
+OUTPUT_DIR = Path("experiments/scenario_comparison")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 scenarios = {
@@ -27,7 +31,7 @@ for name, override in scenarios.items():
 
 #results = sensitivity_march_review.run_parameter_sweep(baseline_config.config,parameter_name="keep_out_crater",values=values,n_runs=baseline_config.config["num_runs"])
 #pprint.pprint(results, sort_dicts=False, width=200)
-with open("experiments_scenarios.json", "w") as f:
+with open(OUTPUT_DIR / "experiments_scenarios.json", "w") as f:
     json.dump(results, f)
     f.write("\n")
 
