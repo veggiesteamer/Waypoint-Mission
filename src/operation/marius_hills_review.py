@@ -81,7 +81,7 @@ def save_path_plot(grid, path, output_path):
         ax.plot(path_arr[:, 1], path_arr[:, 0], 'b-', linewidth=3, label='Path')
         ax.plot(path_arr[0, 1], path_arr[0, 0], 'go', markersize=15, label='Start')
         ax.plot(path_arr[-1, 1], path_arr[-1, 0], 'ro', markersize=15, label='Goal')
-        ax.legend(fontsize=12)
+        ax.legend(fontsize=18)
 
     ax.set_title("A* Pathfinding Result")
     ax.set_xlabel("Pixels")
@@ -137,7 +137,8 @@ def generate_map(config, dist_image_path="Marius_Hills_Mapped.png",
     ax = distribution_generator.distribution_vizualization_layers(
         map_distance_meter, map_resolution, lunar_distribution_data,
         show_MHP=True, show_craters=True, show_boulders=True,
-        pit_outline=pit_outline, show_pit=True)
+        pit_outline=pit_outline, show_pit=True,
+        faint_radius_threshold_m=config["faint_radius_threshold_m"])
     fig = plt.gcf()
     fig.savefig(dist_image_path, dpi=300)
     plt.close(fig)

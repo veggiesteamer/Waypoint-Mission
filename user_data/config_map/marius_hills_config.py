@@ -4,7 +4,7 @@ config = {
 
     "map_size_m": 2200,
     "resolution": 5, #px/m -- keep >= 1/Dmin_boulder or small objects over-block their grid cell
-    "robot_footprint": 0.75,  # m -- used to dilate obstacles in the grid map, and to compute the robot corridor width
+    "robot_footprint": 0.,  # m -- used to dilate obstacles in the grid map, and to compute the robot corridor width
     "goal_fraction": 0.5,  # goal placed at this fraction of the map extent, not the far corner
     "planning_downsample_factor": 1,  # only needed for the slow pure-Python "astar" planner; pyastar2d doesn't need it and it can falsely block all paths at higher densities (max-pooling is obstacle-conservative)
     "planner": "pyastar",  # "pyastar" (fast, compiled) or "astar" (pure-Python, has the progress bar)
@@ -19,6 +19,10 @@ config = {
     # boulder, and a faint band the width of the rover along the planned path
     "boulder_safety_margin_m": 5,
     "robot_corridor_width_m": 6,
+
+    # map-plot only: craters/boulders with radius below this are drawn faint
+    # (pastel color, lower alpha) to indicate they're near/below map resolution
+    "faint_radius_threshold_m": 2,
 
     # rover start point: fixed at a given bearing on a circle around a center
     # point, instead of clicked freely -- angle_deg is measured counterclockwise

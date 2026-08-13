@@ -75,6 +75,7 @@ experiment = {
     "path": path,
     "planning_resolution": map_data["planning_resolution"],
     "result": {"success": True},
+    "waypoints": waypoints,
 }
 
 run_id, run_dir = run_registry.start_run()

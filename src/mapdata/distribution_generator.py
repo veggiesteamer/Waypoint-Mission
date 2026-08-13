@@ -198,7 +198,8 @@ def distribution_vizualization(map_distance_meter, map_resolution, data, ABOVE_T
 
 def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
                                show_MHP=True, show_craters=True, show_boulders=True,
-                               pit_outline=None, show_pit=True):
+                               pit_outline=None, show_pit=True,
+                               faint_radius_threshold_m=2):
 
     centers = data["center"] * map_distance_meter
     radii = data["radius"]
@@ -209,12 +210,12 @@ def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
     def add_layer(mask, color_visible, color_small, alpha_visible=0.6, alpha_small=0.5):
         if not np.any(mask):
             return
-        
+
         c = centers[mask]
         r = radii[mask]
 
         # visibility based on resolution
-        visible = r >= 2
+        visible = r >= faint_radius_threshold_m
 
         patches = [Circle((x, y), ri) for (x, y), ri in zip(c, r)]
 

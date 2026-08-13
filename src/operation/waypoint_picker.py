@@ -220,7 +220,7 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
             x_m, y_m = event.xdata, event.ydata
             marker, = ax.plot(x_m, y_m, "o", color="yellow", markeredgecolor="black", markersize=10, zorder=5)
             label = ax.annotate(str(len(waypoints)), (x_m, y_m), textcoords="offset points",
-                                 xytext=(6, 6), color="yellow", fontsize=11, weight="bold", zorder=6)
+                                 xytext=(6, 6), color="yellow", fontsize=17, weight="bold", zorder=6)
             markers.append((marker, label))
 
         refresh()
@@ -293,7 +293,7 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
             x_m, y_m = _grid_to_m(r, c, resolution)
             ax.plot(x_m, y_m, "o", color="yellow", markeredgecolor="black", markersize=10, zorder=5)
             ax.annotate(str(i), (x_m, y_m), textcoords="offset points",
-                        xytext=(6, 6), color="yellow", fontsize=11, weight="bold", zorder=6)
+                        xytext=(6, 6), color="yellow", fontsize=17, weight="bold", zorder=6)
 
     ax.set_title(f"Planned Route (resolution: {resolution:.2f} px/m)")
     ax.legend(loc="upper right")

@@ -141,15 +141,22 @@ def turn_analysis(path, angle_threshold_deg=10, map_resolution=1, window_m=1.0):
     }
 
 
-def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, window_m=1.0):
+def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, window_m=1.0,
+                          phase_boundary_idx=None):
     """
     Split the path into drive legs of ~step_m meters each (the distance the rover
     covers before stopping to take a measurement / downlink), and count how many
     turns (direction changes above angle_threshold_deg, measured over a window_m
     baseline -- see _incoming_outgoing_headings/turn_analysis) occur within each leg.
 
-    Returns a list of {"distance": meters, "turns": count}, one entry per leg,
-    for feeding into conops_planner.build_mission.
+    phase_boundary_idx: path-vertex index marking the end of mission phase 0
+    (e.g. the index of the first waypoint, for a report split into "traverse
+    to the first waypoint" vs. "everything after"). Each segment is tagged
+    "phase": 0 if it finishes at or before this index, else 1. None (default)
+    tags every segment "phase": 0.
+
+    Returns a list of {"distance": meters, "turns": count, "phase": 0 or 1},
+    one entry per leg, for feeding into conops_planner.build_mission.
     """
     pts = np.array(path, dtype=float)
     vectors = np.diff(pts, axis=0)
@@ -161,22 +168,38 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, w
 
     turn_at = (valid & (angles > angle_threshold_deg))[:len(vectors)]
 
+    def phase_at(end_vertex_idx):
+        if phase_boundary_idx is None or end_vertex_idx <= phase_boundary_idx:
+            return 0
+        return 1
+
     segments = []
     acc_dist = 0.0
     acc_turns = 0
 
     for i, length in enumerate(seg_lengths):
-        acc_dist += length
+        remaining = length
+        # turn_at[i] flags vertex i, where vector i *starts* -- add it to the
+        # pool as soon as this vector begins, same as the un-chunked case
+        # below; it drains into whichever segment closes next
         if turn_at[i]:
             acc_turns += 1
 
-        if acc_dist >= step_m:
-            segments.append({"distance": acc_dist, "turns": acc_turns})
+        # a single vector can be much longer than step_m (e.g. a long,
+        # obstacle-free straight run left intact by simplify_path_line_of_sight)
+        # -- chunk it into as many step_m-sized stops as it spans, instead of
+        # letting one long vector become one oversized segment
+        while acc_dist + remaining >= step_m:
+            take = step_m - acc_dist
+            remaining -= take
             acc_dist = 0.0
+            segments.append({"distance": step_m, "turns": acc_turns, "phase": phase_at(i + 1)})
             acc_turns = 0
 
+        acc_dist += remaining
+
     if acc_dist > 0:
-        segments.append({"distance": acc_dist, "turns": acc_turns})
+        segments.append({"distance": acc_dist, "turns": acc_turns, "phase": phase_at(len(seg_lengths))})
 
     return segments
 
