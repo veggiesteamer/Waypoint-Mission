@@ -43,6 +43,14 @@ def load_waypoints(path) -> Tuple[Optional[Tuple[int, int]], List[Tuple[int, int
     return start, [tuple(wp) for wp in data["waypoints"]]
 
 
+def save_special_waypoints(path, special_waypoints: List[Tuple[int, int]]):
+    Path(path).write_text(json.dumps(special_waypoints))
+
+
+def load_special_waypoints(path) -> List[Tuple[int, int]]:
+    return [tuple(wp) for wp in json.loads(Path(path).read_text())]
+
+
 def _draw_map_meters(ax, grid: np.ndarray, resolution: float):
     height_m = grid.shape[0] / resolution
     width_m = grid.shape[1] / resolution
@@ -252,8 +260,96 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
     return picked["start"], waypoints
 
 
+def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[Tuple[int, int]],
+                            start: Optional[Tuple[int, int]] = None,
+                            landing_zone_radius_m: Optional[float] = None,
+                            start_area_radius_m: Optional[float] = None,
+                            start_circle_center_m: Optional[Tuple[float, float]] = None,
+                            start_circle_radius_m: Optional[float] = None,
+                            boulder_centers_m: Optional[np.ndarray] = None,
+                            boulder_radii_m: Optional[np.ndarray] = None,
+                            boulder_safety_margin_m: Optional[float] = None,
+                            click_radius_m: float = 3.0,
+                            title: str = "Click a waypoint to mark it special (toggles) "
+                                         "- close window when done"
+                            ) -> List[Tuple[int, int]]:
+    """
+    Show the already-picked route `waypoints` on the map (same context as
+    pick_waypoints) and let the user click on/near one to toggle whether
+    it's "special" -- a richer, independently-defined activity sequence
+    (see conops_planner.SPECIAL_STOP_TASK_SEQUENCE) runs at whichever
+    regular stop occurs at or after it instead of the normal one (only
+    takes effect in phase 1/pit_ops -- see path_analyzer.build_drive_segments'
+    special_trigger_idxs). A click only registers if it lands within
+    click_radius_m of an existing waypoint marker; anywhere else on the map
+    is ignored. Returns the subset of `waypoints` flagged special, in their
+    original order, once the figure window is closed.
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    _draw_map_meters(ax, grid, resolution)
+    _draw_start_circle(ax, start_circle_center_m, start_circle_radius_m)
+    _draw_boulder_safety_halos(ax, boulder_centers_m, boulder_radii_m, boulder_safety_margin_m)
+    _draw_zones(ax, start, resolution, landing_zone_radius_m, start_area_radius_m)
+
+    waypoints_m = [_grid_to_m(r, c, resolution) for r, c in waypoints]
+    is_special = [False] * len(waypoints)
+    markers = []
+
+    def marker_color(i):
+        return "magenta" if is_special[i] else "yellow"
+
+    for i, (x_m, y_m) in enumerate(waypoints_m):
+        marker, = ax.plot(x_m, y_m, "o", color=marker_color(i), markeredgecolor="black",
+                           markersize=10, zorder=5)
+        label = ax.annotate(str(i + 1), (x_m, y_m), textcoords="offset points",
+                             xytext=(6, 6), color=marker_color(i), fontsize=17, weight="bold", zorder=6)
+        markers.append((marker, label))
+
+    ax.set_title(title)
+
+    # Same click-vs-drag disambiguation as pick_waypoints: a placement only
+    # counts if the mouse is released within a few pixels of where it was
+    # pressed, so a zoom/pan drag never toggles a marker by accident.
+    CLICK_TOLERANCE_PX = 4
+    press_xy = {"px": None}
+
+    def on_press(event):
+        press_xy["px"] = (event.x, event.y) if event.inaxes == ax else None
+
+    def on_release(event):
+        start_px = press_xy["px"]
+        press_xy["px"] = None
+        if start_px is None or event.inaxes != ax or event.xdata is None or event.ydata is None:
+            return
+        if (event.x - start_px[0]) ** 2 + (event.y - start_px[1]) ** 2 > CLICK_TOLERANCE_PX ** 2:
+            return  # mouse moved -- a drag (zoom/pan), not a click
+
+        if not waypoints_m:
+            return
+        click_m = np.array([event.xdata, event.ydata])
+        dists = [float(np.linalg.norm(click_m - np.array(p))) for p in waypoints_m]
+        nearest_i = int(np.argmin(dists))
+        if dists[nearest_i] > click_radius_m:
+            return  # click too far from any waypoint marker -- ignore
+
+        is_special[nearest_i] = not is_special[nearest_i]
+        marker, label = markers[nearest_i]
+        color = marker_color(nearest_i)
+        marker.set_color(color)
+        label.set_color(color)
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("button_press_event", on_press)
+    fig.canvas.mpl_connect("button_release_event", on_release)
+
+    plt.show()  # blocks until the window is closed
+
+    return [wp for wp, special in zip(waypoints, is_special) if special]
+
+
 def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: float, output_path,
                      waypoints: Optional[List[Tuple[int, int]]] = None,
+                     special_waypoints: Optional[List[Tuple[int, int]]] = None,
                      start: Optional[Tuple[int, int]] = None,
                      landing_zone_radius_m: Optional[float] = None,
                      start_area_radius_m: Optional[float] = None,
@@ -274,6 +370,8 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
     instead of showing the full map -- combined with a higher dpi, this
     gives a detailed close-up without re-rasterizing anything (the source
     grid is unchanged, only the view and the output resolution change).
+    special_waypoints (a subset of `waypoints`, see pick_special_waypoints)
+    are drawn in magenta instead of yellow.
     """
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_map_meters(ax, grid, resolution)
@@ -289,11 +387,13 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
         ax.plot(*path_m[-1], "ro", markersize=12, label="Goal")
 
     if waypoints:
+        special_set = set(special_waypoints) if special_waypoints else set()
         for i, (r, c) in enumerate(waypoints, start=1):
             x_m, y_m = _grid_to_m(r, c, resolution)
-            ax.plot(x_m, y_m, "o", color="yellow", markeredgecolor="black", markersize=10, zorder=5)
+            color = "magenta" if (r, c) in special_set else "yellow"
+            ax.plot(x_m, y_m, "o", color=color, markeredgecolor="black", markersize=10, zorder=5)
             ax.annotate(str(i), (x_m, y_m), textcoords="offset points",
-                        xytext=(6, 6), color="yellow", fontsize=17, weight="bold", zorder=6)
+                        xytext=(6, 6), color=color, fontsize=17, weight="bold", zorder=6)
 
     ax.set_title(f"Planned Route (resolution: {resolution:.2f} px/m)")
     ax.legend(loc="upper right")

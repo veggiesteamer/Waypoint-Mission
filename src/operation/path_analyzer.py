@@ -142,12 +142,17 @@ def turn_analysis(path, angle_threshold_deg=10, map_resolution=1, window_m=1.0):
 
 
 def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, window_m=1.0,
-                          phase_boundary_idx=None):
+                          phase_boundary_idx=None, special_trigger_idxs=None):
     """
     Split the path into drive legs of ~step_m meters each (the distance the rover
     covers before stopping to take a measurement / downlink), and count how many
     turns (direction changes above angle_threshold_deg, measured over a window_m
     baseline -- see _incoming_outgoing_headings/turn_analysis) occur within each leg.
+
+    step_m: either a plain number (used for every stop) or a {phase: step_m}
+    dict for per-phase spacing (falls back to phase 0's value for any phase
+    not listed). A single path vector can span multiple stops either way --
+    it's chunked into as many step_m-sized stops as it covers.
 
     phase_boundary_idx: path-vertex index marking the end of mission phase 0
     (e.g. the index of the first waypoint, for a report split into "traverse
@@ -155,8 +160,15 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, w
     "phase": 0 if it finishes at or before this index, else 1. None (default)
     tags every segment "phase": 0.
 
-    Returns a list of {"distance": meters, "turns": count, "phase": 0 or 1},
-    one entry per leg, for feeding into conops_planner.build_mission.
+    special_trigger_idxs: path-vertex indices (e.g. user-marked "special"
+    waypoints) that force a richer sequence onto the next regular stop --
+    same snap-forward semantics as phase_boundary_idx. Only ever tags a
+    segment "special" if that segment is actually phase 1 -- a trigger
+    index in phase 0 (or with phase splitting disabled) never fires.
+
+    Returns a list of {"distance": meters, "turns": count, "phase": 0 or 1,
+    "special": bool}, one entry per leg, for feeding into
+    conops_planner.build_mission.
     """
     pts = np.array(path, dtype=float)
     vectors = np.diff(pts, axis=0)
@@ -173,6 +185,23 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, w
             return 0
         return 1
 
+    def step_m_for_phase(phase):
+        return step_m.get(phase, step_m.get(0)) if isinstance(step_m, dict) else step_m
+
+    trigger_idxs = sorted(special_trigger_idxs) if special_trigger_idxs else []
+    trigger_ptr = 0
+
+    def consume_special_trigger(end_vertex_idx):
+        nonlocal trigger_ptr
+        triggered = False
+        while trigger_ptr < len(trigger_idxs) and trigger_idxs[trigger_ptr] <= end_vertex_idx:
+            triggered = True
+            trigger_ptr += 1
+        # gated on the segment's real phase -- when phase splitting is off,
+        # phase_at always returns 0, so this naturally never fires even
+        # though phase_boundary_idx can be None
+        return triggered and phase_at(end_vertex_idx) == 1
+
     segments = []
     acc_dist = 0.0
     acc_turns = 0
@@ -185,21 +214,28 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, w
         if turn_at[i]:
             acc_turns += 1
 
+        # a vector's phase can't change partway through -- phase_boundary_idx
+        # is always an exact path vertex -- so the threshold for this whole
+        # vector is fixed up front
+        current_step_m = step_m_for_phase(phase_at(i + 1))
+
         # a single vector can be much longer than step_m (e.g. a long,
         # obstacle-free straight run left intact by simplify_path_line_of_sight)
         # -- chunk it into as many step_m-sized stops as it spans, instead of
         # letting one long vector become one oversized segment
-        while acc_dist + remaining >= step_m:
-            take = step_m - acc_dist
+        while acc_dist + remaining >= current_step_m:
+            take = current_step_m - acc_dist
             remaining -= take
             acc_dist = 0.0
-            segments.append({"distance": step_m, "turns": acc_turns, "phase": phase_at(i + 1)})
+            segments.append({"distance": current_step_m, "turns": acc_turns, "phase": phase_at(i + 1),
+                              "special": consume_special_trigger(i + 1)})
             acc_turns = 0
 
         acc_dist += remaining
 
     if acc_dist > 0:
-        segments.append({"distance": acc_dist, "turns": acc_turns, "phase": phase_at(len(seg_lengths))})
+        segments.append({"distance": acc_dist, "turns": acc_turns, "phase": phase_at(len(seg_lengths)),
+                          "special": consume_special_trigger(len(seg_lengths))})
 
     return segments
 

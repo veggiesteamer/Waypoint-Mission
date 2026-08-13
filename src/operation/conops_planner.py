@@ -8,12 +8,10 @@ ACTOR_COLORS = {"rover": "#2a78d6", "earth": "#eb6834"}
 
 # fixed row order for plot_timeline, matching the sequence tasks are built
 # in within generate_waypoint_tasks -- not every task appears in every leg
-# (turn is conditional), so row order can't just follow first-appearance
-# while scanning the whole timeline chronologically. "localization turn"
-# sits right next to "SciCAM 360 measurement": they're mutually-exclusive
-# labels for the same sequence slot, never both present on the same stop.
-TASK_ROW_ORDER = ["turn", "drive", "Situational Picture", "Nav Downlink",
-                   "SciCAM 360 measurement", "localization turn", "GRAV measurement", "SPEC measurement",
+# (turn/localization turn are conditional), so row order can't just follow
+# first-appearance while scanning the whole timeline chronologically
+TASK_ROW_ORDER = ["Walk", "turn", "localization turn", "Situational Picture", "Nav Downlink",
+                   "GRAV measurement", "SPEC measurement",
                    "SciCAM measurement", "Payload Downlink", "nap", "earth_analysis", "uplink"]
 
 # (key, display name, actor) in execution order for the sequential rover
@@ -24,13 +22,32 @@ TASK_ROW_ORDER = ["turn", "drive", "Situational Picture", "Nav Downlink",
 # their duration comes from the path geometry, not a fixed config value.
 # "relay" (the sheet's "Payload data downlink", OPS-12-b) comes after the
 # measurements it's actually downlinking, not right after the quick nav
-# image downlink.
+# image downlink. SciCAM 360 measurement was removed -- it's no longer in
+# the Excel.
 STOP_TASK_SEQUENCE = [
     ("picture", "Situational Picture", "rover"),
     ("image_downlink", "Nav Downlink", "rover"),
-    ("scicam_360", "SciCAM 360 measurement", "rover"),
     ("grav_measurement", "GRAV measurement", "rover"),
     ("spec_measurement", "SPEC measurement", "rover"),
+    ("scicam_measurement", "SciCAM measurement", "rover"),
+    ("relay", "Payload Downlink", "rover"),
+    ("nap", "nap", "rover"),
+]
+
+# Alternate per-stop sequence for special waypoints (pit_ops only -- see
+# path_analyzer.build_drive_segments' special_trigger_idxs and
+# mission_ops_config.phase_params). Independently defined from
+# STOP_TASK_SEQUENCE -- free to add/remove/reorder tasks -- but must still
+# contain exactly one "image_downlink" entry (generate_waypoint_tasks hooks
+# earth_analysis's start off it regardless of which sequence is active).
+# "picture"/"spec_measurement" repeat counts come from phase_params[1]'s
+# special_num_pictures/special_num_spec_measurements, not from how many
+# times they're listed here.
+SPECIAL_STOP_TASK_SEQUENCE = [
+    ("picture", "Situational Picture", "rover"),
+    ("image_downlink", "Nav Downlink", "rover"),
+    ("spec_measurement", "SPEC measurement", "rover"),
+    ("grav_measurement", "GRAV measurement", "rover"),
     ("scicam_measurement", "SciCAM measurement", "rover"),
     ("relay", "Payload Downlink", "rover"),
     ("nap", "nap", "rover"),
@@ -47,23 +64,26 @@ class Task:
     power_w: float = 0.0
 
 def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, config_power,
-                             phase=0, localization=False):
+                             phase=0, localization=False, special=False, repeat_counts=None):
     """
-    Build one stop's worth of tasks: an optional turn, the drive leg, then
-    the fixed STOP_TASK_SEQUENCE, with earth_analysis/uplink running in
-    parallel on the ground side. Durations for turn/drive come from the
-    path geometry (turn_time/travel_time); every other task's duration and
-    power draw are looked up by key from config_time/config_power.
+    Build one stop's worth of tasks: the drive/walk leg, an optional turn
+    (reorientation for the next leg's heading), an optional localization
+    turn, then the fixed sequence (STOP_TASK_SEQUENCE, or
+    SPECIAL_STOP_TASK_SEQUENCE if special=True), with earth_analysis/uplink
+    running in parallel on the ground side. Durations for turn/drive come
+    from the path geometry (turn_time/travel_time); every other task's
+    duration and power draw are looked up by key from config_time/config_power.
 
-    localization: on a forced-localization stop (every Nth measurement,
-    see mission_ops_config.localization_interval_measurements), the
-    scicam_360 slot is relabeled "localization turn" instead of "SciCAM
-    360 measurement" -- same maneuver (a 360-degree turn while imaging),
-    same time/power, just serving double duty on this stop. Not an extra
-    task: that would duplicate the same physical activity twice.
+    repeat_counts: optional {key: N} -- append that task N times in a row
+    instead of once (e.g. {"picture": 5} for 5 Situational Picture tasks).
+    Keys not listed default to 1. Never target "image_downlink" with a
+    repeat count -- its end time is what earth_analysis's start is hooked
+    to below, and the check re-fires on every repeat, silently jumping to
+    the last repeat's end.
     """
     tasks = []
     t = start_time
+    repeat_counts = repeat_counts or {}
 
     def append_task(key, display, actor, duration):
         nonlocal t
@@ -71,29 +91,40 @@ def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, con
         tasks.append(Task(display, actor, t, t + duration, phase=phase, power_w=power))
         t += duration
 
+    # Drive
+    append_task("drive", "Walk", "rover", travel_time)
+
     # Turn / reorientation (direction changes encountered while driving this leg)
     if turn_time > 0:
         append_task("turn", "turn", "rover", turn_time)
 
-    # Drive
-    append_task("drive", "drive", "rover", travel_time)
+    # Localization turn (forced every Nth measurement, see
+    # mission_ops_config.localization_interval_measurements -- snapped onto
+    # this stop rather than creating a separate one). Same physical
+    # maneuver as Spot Turn (a stationary rover turn), so it reuses that
+    # task's time/power rather than its own config value.
+    if localization and config_time.get("turn_time", 0) > 0:
+        append_task("turn", "localization turn", "rover", config_time["turn_time"])
 
-    relay_start = None
-    for key, display, actor in STOP_TASK_SEQUENCE:
-        if key == "scicam_360" and localization:
-            display = "localization turn"
-        if key == "relay":
-            relay_start = t
-        append_task(key, display, actor, config_time[f"{key}_time"])
-    assert relay_start is not None, '"relay" must be in STOP_TASK_SEQUENCE'
+    sequence = SPECIAL_STOP_TASK_SEQUENCE if special else STOP_TASK_SEQUENCE
+    sequence_name = "SPECIAL_STOP_TASK_SEQUENCE" if special else "STOP_TASK_SEQUENCE"
+
+    image_downlink_end = None
+    for key, display, actor in sequence:
+        for _ in range(repeat_counts.get(key, 1)):
+            append_task(key, display, actor, config_time[f"{key}_time"])
+            if key == "image_downlink":
+                image_downlink_end = t
+    assert image_downlink_end is not None, f'"image_downlink" must be in {sequence_name}'
     nap_end = t
 
-    # Parallel activities. earth_analysis starts as soon as the payload
-    # downlink begins (Earth can start working on data as it streams in),
-    # not once the whole downlink has finished.
+    # Parallel activities. earth_analysis starts once the nav image has
+    # finished downlinking -- Earth can start working from that quick
+    # picture while the rover is still out taking measurements and
+    # downlinking the (much larger) payload data.
     earth_analysis_time = config_time["earth_analysis_time"]
-    earth_analysis_end = relay_start + earth_analysis_time
-    tasks.append(Task("earth_analysis", "earth", relay_start, earth_analysis_end,
+    earth_analysis_end = image_downlink_end + earth_analysis_time
+    tasks.append(Task("earth_analysis", "earth", image_downlink_end, earth_analysis_end,
                        phase=phase, power_w=config_power.get("earth_analysis_power", 0.0)))
 
     # Uplink (must finish before next drive, i.e. after both earth_analysis
@@ -106,7 +137,8 @@ def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, con
     return tasks, uplink_start + uplink_time
 
 
-def build_mission(segments, velocity, config_time, config_power_robot, localization_interval=None):
+def build_mission(segments, velocity, config_time, config_power_robot, localization_interval=None,
+                   phase_params=None):
     """
     segments: list of {"distance": meters, "turns": count}, one per drive leg
     between measurement/downlink stops (see path_analyzer.build_drive_segments).
@@ -114,6 +146,13 @@ def build_mission(segments, velocity, config_time, config_power_robot, localizat
     localization_interval: force a "localization turn" every Nth measurement
     (each segment generates exactly one stop, so this is equivalently every
     Nth segment/stop). None (default) never forces one.
+
+    phase_params: optional {phase: {"num_pictures": N, "special_num_pictures":
+    N, "special_num_spec_measurements": N, ...}} (see mission_ops_config.py).
+    Drives the picture-count-per-stop for ordinary stops (per phase) and, for
+    segments tagged "special" by build_drive_segments, the picture/SPEC
+    counts for SPECIAL_STOP_TASK_SEQUENCE instead. None (default) keeps
+    today's behavior: exactly 1 picture per stop, never special.
     """
 
     timeline = []
@@ -128,9 +167,18 @@ def build_mission(segments, velocity, config_time, config_power_robot, localizat
         measurement_count += 1
         localization = bool(localization_interval) and measurement_count % localization_interval == 0
 
+        phase = seg.get("phase", 0)
+        special = seg.get("special", False)
+        params = (phase_params or {}).get(phase, {})
+        if special:
+            repeat_counts = {"picture": params.get("special_num_pictures", 1),
+                              "spec_measurement": params.get("special_num_spec_measurements", 1)}
+        else:
+            repeat_counts = {"picture": params.get("num_pictures", 1)}
+
         tasks, t = generate_waypoint_tasks(
             t, travel_time, turn_time, config_time, config_power_robot,
-            phase=seg.get("phase", 0), localization=localization
+            phase=phase, localization=localization, special=special, repeat_counts=repeat_counts
         )
 
         timeline.extend(tasks)
@@ -203,7 +251,7 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
             facecolor=color, edgecolor=color
         )
 
-        if velocity is not None and task.name == "drive":
+        if velocity is not None and task.name == "Walk":
             leg_distance_m = velocity * (task.end - task.start)
             cumulative_distance_m += leg_distance_m
             ax.annotate(f"{leg_distance_m:.0f} m", (start_time + duration_time / 2, y),
@@ -275,7 +323,7 @@ def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
 
         if velocity is not None:
             for t in actor_tasks:
-                if t.name != "drive":
+                if t.name != "Walk":
                     continue
                 leg_distance_m = velocity * (t.end - t.start)
                 cumulative_distance_m += leg_distance_m

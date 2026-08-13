@@ -46,7 +46,7 @@ def position_at_distance(path: List[Tuple[float, float]], cum_dist_m: np.ndarray
 def distance_at_time(timeline: List[TaskLike], velocity: float, t_s: float) -> float:
     """Cumulative drive distance (m) reached by mission-clock time t_s (s)."""
     drive_tasks = sorted(
-        (task for task in timeline if _task_field(task, "name") == "drive"),
+        (task for task in timeline if _task_field(task, "name") == "Walk"),
         key=lambda task: _task_field(task, "start"))
 
     cumulative_m = 0.0

@@ -22,11 +22,12 @@ ACTOR_BY_SHEET_VALUE = {"Robot": "rover", "Ground": "earth"}
 
 # Task ID -> (internal key, display name shown on the timeline, actor).
 # Preferred over description-text matching since it's immune to the sheet's
-# text quirks (e.g. the "SciCAM 360 measurement" row uses a mis-encoded
-# masculine-ordinal-indicator, 0xBA, instead of a real degree sign, 0xB0).
+# text quirks. OPS-22 (SciCAM 360 measurement) was removed from the sheet
+# and deliberately dropped here too -- conops_planner.STOP_TASK_SEQUENCE no
+# longer has it, so if it reappears in a future sheet it should surface as
+# an explicit "unmapped row" error, not silently come back to life.
 ROW_MAP_BY_ID = {
     "OPS-03": ("drive", "drive", "rover"),
-    "OPS-22": ("scicam_360", "SciCAM 360 measurement", "rover"),
     "OPS-10": ("picture", "Situational Picture", "rover"),
     "OPS-12-a": ("image_downlink", "Nav Downlink", "rover"),
     "OPS-13": ("grav_measurement", "GRAV measurement", "rover"),

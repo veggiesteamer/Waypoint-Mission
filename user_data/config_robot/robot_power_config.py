@@ -5,7 +5,6 @@
 config = {
     "drive_power": 159.91,  # "Walking + GPR meas. duty cycled" (OPS-03)
     "turn_power": 151.51,  # "Spot Turn"
-    "scicam_360_power": 16.32,  # "SciCAM 360° measurement" (OPS-22)
     "picture_power": 17.11,  # "NAV image capture" (OPS-10)
     "image_downlink_power": 15.41,  # "NAV downlink+ GRAV Spinup" (OPS-12-a)
     "grav_measurement_power": 15.01,  # "GRAV measurement" (OPS-13)

@@ -1,5 +1,4 @@
 from pathlib import Path
-
 from src.globalplanner import path_planning_multi
 from src.operation import marius_hills_review
 from src.operation import marius_hills_mission
@@ -15,6 +14,7 @@ MAP_OUTPUT_DIR = Path("experiments/marius_hills")
 MAP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 GRID_CACHE_PATH = MAP_OUTPUT_DIR / "grid_cache.npz"
 LAST_WAYPOINTS_PATH = MAP_OUTPUT_DIR / "last_waypoints.json"
+LAST_SPECIAL_WAYPOINTS_PATH = MAP_OUTPUT_DIR / "last_special_waypoints.json"
 
 map_data = marius_hills_review.load_or_generate_map(
     marius_hills_config.config,
@@ -55,6 +55,27 @@ if clicked_waypoints is None:
         raise ValueError("no waypoints were picked")
     waypoint_picker.save_waypoints(LAST_WAYPOINTS_PATH, start, clicked_waypoints)
 
+special_waypoints = None
+if LAST_SPECIAL_WAYPOINTS_PATH.exists():
+    saved_special = waypoint_picker.load_special_waypoints(LAST_SPECIAL_WAYPOINTS_PATH)
+    if saved_special:
+        answer = input(f"Found {len(saved_special)} previously saved special waypoint(s) "
+                        f"({LAST_SPECIAL_WAYPOINTS_PATH}). Use them? [Y/n]: ").strip().lower()
+        if answer in ("", "y", "yes"):
+            special_waypoints = saved_special
+
+if special_waypoints is None:
+    special_waypoints = waypoint_picker.pick_special_waypoints(
+        map_data["planning_grid"], map_data["planning_resolution"], clicked_waypoints, start=start,
+        landing_zone_radius_m=marius_hills_config.config.get("landing_zone_radius_m"),
+        start_area_radius_m=marius_hills_config.config.get("start_area_radius_m"),
+        start_circle_center_m=marius_hills_config.config.get("start_circle_center_m"),
+        start_circle_radius_m=marius_hills_config.config.get("start_circle_radius_m"),
+        boulder_centers_m=map_data.get("boulder_centers_m"),
+        boulder_radii_m=map_data.get("boulder_radii_m"),
+        boulder_safety_margin_m=marius_hills_config.config.get("boulder_safety_margin_m"))
+    waypoint_picker.save_special_waypoints(LAST_SPECIAL_WAYPOINTS_PATH, special_waypoints)
+
 waypoints = [start] + clicked_waypoints
 
 path = path_planning_multi.find_path_multi_waypoint(
@@ -76,13 +97,14 @@ experiment = {
     "planning_resolution": map_data["planning_resolution"],
     "result": {"success": True},
     "waypoints": waypoints,
+    "special_waypoints": special_waypoints,
 }
 
 run_id, run_dir = run_registry.start_run()
 
 waypoint_picker.save_route_plot(
     map_data["planning_grid"], path, map_data["planning_resolution"], run_dir / "Route_Plot.png",
-    waypoints=clicked_waypoints, start=start,
+    waypoints=clicked_waypoints, special_waypoints=special_waypoints, start=start,
     landing_zone_radius_m=marius_hills_config.config.get("landing_zone_radius_m"),
     start_area_radius_m=marius_hills_config.config.get("start_area_radius_m"),
     start_circle_center_m=marius_hills_config.config.get("start_circle_center_m"),
@@ -95,7 +117,7 @@ waypoint_picker.save_route_plot(
 if marius_hills_config.config.get("crop_center_m") and marius_hills_config.config.get("crop_size_m"):
     waypoint_picker.save_route_plot(
         map_data["planning_grid"], path, map_data["planning_resolution"], run_dir / "Route_Plot_Crop.png",
-        waypoints=clicked_waypoints, start=start,
+        waypoints=clicked_waypoints, special_waypoints=special_waypoints, start=start,
         landing_zone_radius_m=marius_hills_config.config.get("landing_zone_radius_m"),
         start_area_radius_m=marius_hills_config.config.get("start_area_radius_m"),
         start_circle_center_m=marius_hills_config.config.get("start_circle_center_m"),
@@ -122,6 +144,7 @@ run_registry.save_run(
         "map_config": marius_hills_config.config,
         "start": start,
         "waypoints": waypoints,
+        "special_waypoints": special_waypoints,
         "mission_config": mission_ops_config.config,
         "robot_time_config": robot_time_config.config,
         "robot_power_config": robot_power_config.config,

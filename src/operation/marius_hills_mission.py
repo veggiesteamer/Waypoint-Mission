@@ -91,7 +91,14 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     path = experiment["path"]
     planning_resolution = experiment["planning_resolution"]
 
-    stop_distance_m = (mission_config["min_distance"] + mission_config["max_distance"]) / 2
+    # Per-phase stop spacing (see mission_ops_config.phase_params) -- falls
+    # back to flat min_distance/max_distance keys for callers that don't
+    # set phase_params (e.g. an older saved experiment with no phase split).
+    phase_params = mission_config.get("phase_params")
+    if phase_params:
+        step_m = {p: (v["min_distance"] + v["max_distance"]) / 2 for p, v in phase_params.items()}
+    else:
+        step_m = (mission_config["min_distance"] + mission_config["max_distance"]) / 2
 
     # window_m / angle_threshold_deg are optional: if the config omits either,
     # don't pass that kwarg at all so build_drive_segments' own default
@@ -114,9 +121,16 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     if phase_names and waypoints and len(waypoints) > 1:
         phase_boundary_idx = path.index(tuple(waypoints[1]))
 
+    # Special waypoints (a subset of `waypoints` the caller flagged -- see
+    # waypoint_picker.pick_special_waypoints) -- path-vertex indices,
+    # phase-gated inside build_drive_segments itself (only takes effect if
+    # the segment they snap onto is actually phase 1/pit_ops).
+    special_waypoints = experiment.get("special_waypoints")
+    special_trigger_idxs = [path.index(tuple(wp)) for wp in special_waypoints] if special_waypoints else None
+
     segments = path_analyzer.build_drive_segments(
-        path, planning_resolution, stop_distance_m,
-        phase_boundary_idx=phase_boundary_idx, **turn_kwargs)
+        path, planning_resolution, step_m,
+        phase_boundary_idx=phase_boundary_idx, special_trigger_idxs=special_trigger_idxs, **turn_kwargs)
 
     # Force a "localization turn" every Nth measurement (i.e. every Nth
     # stop/segment -- see conops_planner.build_mission).
@@ -125,7 +139,7 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     velocity = mission_config["robot_velocity"]
     timeline = conops_planner.build_mission(
         segments, velocity, robot_time_config, robot_power_config,
-        localization_interval=localization_interval)
+        localization_interval=localization_interval, phase_params=phase_params)
 
     fig = conops_planner.plot_timeline(timeline, show=False, velocity=velocity, phase_names=phase_names)
     fig.savefig(timeline_image_path, dpi=300)
