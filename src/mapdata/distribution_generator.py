@@ -5,27 +5,31 @@ from matplotlib.collections import PatchCollection
 from matplotlib.path import Path as MplPath
 
 
-def center_radius_generator_distribution(map_distance_meter,map_resolution,keep_out_zone,robot_size,k,b,Dmin,Dmax):
+def center_radius_generator_distribution(map_distance_meter,map_resolution,keep_out_zone,robot_size,k,b,Dmin,Dmax,seed=None):
     """
     Create centerpoints and radii sampled from an uniform distribution.
-    
+
     Args:
         domain_size: int value to compute the expectation value of the amount of craters
         k,b: cumulative law parameters, given by geoscience  N(>D) = k D^-b  (per m²)
         D_min : smallest diameter [m]
         D_max : largest diameter [m]
-    
+        seed: optional int for a reproducible distribution -- the same seed
+            (with the same other args) always generates the same craters/
+            boulders. None (default) is fresh/different every call, same as
+            before this parameter existed.
+
     Returns:
         List of touples of the center points, normalized between 0 and 1, List for the radii
 
     """
+    rng = np.random.default_rng(seed)
 
     crater_amount_expected = map_distance_meter**2 * k * Dmin**(-b)
-    #np.random.seed(seed) not used
-    crater_amount_poisson = np.random.poisson(crater_amount_expected)
+    crater_amount_poisson = rng.poisson(crater_amount_expected)
 
     # Create an array of the given shape and populate it with random samples from a uniform distribution over [0, 1).
-    crater_uniform = np.random.rand(crater_amount_poisson)
+    crater_uniform = rng.random(crater_amount_poisson)
 
     D_m = (Dmin**(-b) - crater_uniform*(Dmin**(-b)-Dmax**(-b)))**(-1/b)
 
@@ -33,8 +37,8 @@ def center_radius_generator_distribution(map_distance_meter,map_resolution,keep_
     R_m = D_m / 2 * (1 + keep_out_zone) + robot_size
 
     # create centers
-    x_m = np.random.rand(crater_amount_poisson)
-    y_m = np.random.rand(crater_amount_poisson)
+    x_m = rng.random(crater_amount_poisson)
+    y_m = rng.random(crater_amount_poisson)
     center = np.column_stack((x_m,y_m))
 
     return center, R_m
@@ -199,7 +203,8 @@ def distribution_vizualization(map_distance_meter, map_resolution, data, ABOVE_T
 def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
                                show_MHP=True, show_craters=True, show_boulders=True,
                                pit_outline=None, show_pit=True,
-                               faint_radius_threshold_m=2):
+                               faint_radius_threshold_m=2,
+                               pit_centroid_m=None, show_pit_centroid=True):
 
     centers = data["center"] * map_distance_meter
     radii = data["radius"]
@@ -243,6 +248,13 @@ def distribution_vizualization_layers(map_distance_meter, map_resolution, data,
     if show_pit and pit_outline is not None:
         pit_m = pit_outline * map_distance_meter
         ax.add_patch(MplPolygon(pit_m, closed=True, facecolor="black", edgecolor="black", alpha=0.8))
+
+    # faint marker at the pit centroid -- the reference point start_circle_
+    # center_m/crop_center_m default to (see marius_hills_config.py)
+    if show_pit_centroid and pit_centroid_m is not None:
+        ax.add_patch(Circle(pit_centroid_m, map_distance_meter * 0.01,
+                             facecolor="none", edgecolor="white", linewidth=1.5, alpha=0.6, zorder=4))
+        ax.plot(*pit_centroid_m, "+", color="white", markersize=10, alpha=0.6, zorder=4)
 
     ax.set_aspect('equal')
     ax.set_xlim(0,map_distance_meter)

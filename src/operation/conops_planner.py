@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import plotly.graph_objects as go
@@ -10,7 +11,8 @@ ACTOR_COLORS = {"rover": "#2a78d6", "earth": "#eb6834"}
 # in within generate_waypoint_tasks -- not every task appears in every leg
 # (turn/localization turn are conditional), so row order can't just follow
 # first-appearance while scanning the whole timeline chronologically
-TASK_ROW_ORDER = ["Walk", "turn", "localization turn", "Situational Picture", "Nav Downlink",
+TASK_ROW_ORDER = ["Walk", "turn", "localization turn", "Locomotion Test",
+                   "Situational Picture", "Nav Downlink",
                    "GRAV measurement", "SPEC measurement",
                    "SciCAM measurement", "Payload Downlink", "nap", "earth_analysis", "uplink"]
 
@@ -34,24 +36,84 @@ STOP_TASK_SEQUENCE = [
     ("nap", "nap", "rover"),
 ]
 
-# Alternate per-stop sequence for special waypoints (pit_ops only -- see
-# path_analyzer.build_drive_segments' special_trigger_idxs and
-# mission_ops_config.phase_params). Independently defined from
-# STOP_TASK_SEQUENCE -- free to add/remove/reorder tasks -- but must still
-# contain exactly one "image_downlink" entry (generate_waypoint_tasks hooks
-# earth_analysis's start off it regardless of which sequence is active).
-# "picture"/"spec_measurement" repeat counts come from phase_params[1]'s
-# special_num_pictures/special_num_spec_measurements, not from how many
-# times they're listed here.
-SPECIAL_STOP_TASK_SEQUENCE = [
-    ("picture", "Situational Picture", "rover"),
-    ("image_downlink", "Nav Downlink", "rover"),
-    ("spec_measurement", "SPEC measurement", "rover"),
-    ("grav_measurement", "GRAV measurement", "rover"),
-    ("scicam_measurement", "SciCAM measurement", "rover"),
-    ("relay", "Payload Downlink", "rover"),
-    ("nap", "nap", "rover"),
-]
+# key -> (display name, actor), for every task STOP_TASK_SEQUENCE knows
+# about -- also the vocabulary special waypoints can draw on (see
+# mission_ops_config.phase_params[1]["special_sequence"]).
+TASK_CATALOG = {key: (display, actor) for key, display, actor in STOP_TASK_SEQUENCE}
+
+# key -> display name, for every locomotion-experiment task defined in
+# user_data/config_robot/locomotion_experiment_config.py (time/power come
+# from there, not the Excel-derived robot_time_config/robot_power_config --
+# see generate_locomotion_experiment_tasks). Add an entry here whenever a
+# new key is added to that config file.
+LOCOMOTION_TASK_CATALOG = {
+    "locomotion_test": "Locomotion Test",
+}
+
+
+def generate_locomotion_experiment_tasks(start_time, sequence, locomotion_config, phase=0):
+    """
+    Build a standalone block of locomotion-experiment tasks (see
+    mission_ops_config.locomotion_experiment), inserted between regular
+    stops rather than as part of one. Each key in `sequence` (from
+    LOCOMOTION_TASK_CATALOG) becomes its own extra drive: duration_s/energy_wh
+    at locomotion_config[key] set the block directly (power_w is derived,
+    not configured), run in place in the timeline -- it costs time/power but
+    doesn't move the rover's mapped position, since this simulator doesn't
+    model real 2D test-pattern kinematics. List a key more than once in
+    `sequence` to repeat it.
+    """
+    tasks = []
+    t = start_time
+    for key in sequence:
+        display = LOCOMOTION_TASK_CATALOG[key]
+        params = locomotion_config[key]
+        duration = params["duration_s"]
+        power_w = params["energy_wh"] * 3600 / duration
+        tasks.append(Task(display, "rover", t, t + duration, phase=phase, power_w=power_w))
+        t += duration
+    return tasks, t
+
+
+def nap_duration_s(t_seconds, target_average_s, nap_curve, mission_start_lunar_hour=0.0,
+                    lunar_day_hours=708.7):
+    """
+    Nap duration (s) as a function of elapsed mission time, following a
+    lunar-day thermal/power cycle: longer in the morning (recharging after
+    lunar night) and around local noon (extra cooldown from peak solar
+    heating), shorter in between (see mission_ops_config.py: lunar_day_hours,
+    mission_start_lunar_hour, nap_curve).
+
+    nap_curve: {"morning_peak_hour", "morning_peak_amplitude_s",
+    "morning_peak_width_h", "noon_peak_hour", "noon_peak_amplitude_s",
+    "noon_peak_width_h"} -- each peak is a Gaussian bump (width = standard
+    deviation, in hours) added on top of a baseline. The baseline is solved
+    for so the curve's average over one full lunar day comes out to exactly
+    target_average_s regardless of the amplitudes/widths chosen: a Gaussian
+    bump's mean over one full period is amplitude * width * sqrt(2*pi) /
+    lunar_day_hours (exact in the limit width << period, an excellent
+    approximation here since the widths are tens of hours against a
+    ~708.7 h period). That's also why "in between" comes out shorter than
+    average for free -- the baseline sits below target_average_s to make
+    room for the bumps.
+    """
+    lunar_hour = (mission_start_lunar_hour + t_seconds / 3600) % lunar_day_hours
+
+    def bump(center_h, amplitude_s, width_h):
+        return amplitude_s * math.exp(-((lunar_hour - center_h) ** 2) / (2 * width_h ** 2))
+
+    def bump_mean(amplitude_s, width_h):
+        return amplitude_s * width_h * math.sqrt(2 * math.pi) / lunar_day_hours
+
+    morning = bump(nap_curve["morning_peak_hour"], nap_curve["morning_peak_amplitude_s"],
+                    nap_curve["morning_peak_width_h"])
+    noon = bump(nap_curve["noon_peak_hour"], nap_curve["noon_peak_amplitude_s"],
+                nap_curve["noon_peak_width_h"])
+    correction = (bump_mean(nap_curve["morning_peak_amplitude_s"], nap_curve["morning_peak_width_h"]) +
+                  bump_mean(nap_curve["noon_peak_amplitude_s"], nap_curve["noon_peak_width_h"]))
+    baseline = target_average_s - correction
+
+    return max(baseline + morning + noon, 0.0)
 
 
 @dataclass
@@ -64,26 +126,51 @@ class Task:
     power_w: float = 0.0
 
 def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, config_power,
-                             phase=0, localization=False, special=False, repeat_counts=None):
+                             phase=0, localization=False, special=False, repeat_counts=None,
+                             special_sequence=None, nap_curve=None, mission_start_lunar_hour=0.0,
+                             lunar_day_hours=708.7, skip_tasks=None):
     """
     Build one stop's worth of tasks: the drive/walk leg, an optional turn
     (reorientation for the next leg's heading), an optional localization
-    turn, then the fixed sequence (STOP_TASK_SEQUENCE, or
-    SPECIAL_STOP_TASK_SEQUENCE if special=True), with earth_analysis/uplink
-    running in parallel on the ground side. Durations for turn/drive come
-    from the path geometry (turn_time/travel_time); every other task's
-    duration and power draw are looked up by key from config_time/config_power.
+    turn, then the fixed sequence (STOP_TASK_SEQUENCE, or special_sequence
+    if special=True), with earth_analysis/uplink running in parallel on the
+    ground side. Durations for turn/drive come from the path geometry
+    (turn_time/travel_time); every other task's duration and power draw are
+    looked up by key from config_time/config_power.
 
     repeat_counts: optional {key: N} -- append that task N times in a row
     instead of once (e.g. {"picture": 5} for 5 Situational Picture tasks).
-    Keys not listed default to 1. Never target "image_downlink" with a
-    repeat count -- its end time is what earth_analysis's start is hooked
-    to below, and the check re-fires on every repeat, silently jumping to
-    the last repeat's end.
+    Keys not listed default to 1. Only applies to the ordinary (non-special)
+    sequence -- never target "image_downlink" with a repeat count either
+    way, since its end time is what earth_analysis's start is hooked to
+    below, and the check re-fires on every repeat, silently jumping to the
+    last repeat's end.
+
+    special_sequence: ordered list of TASK_CATALOG keys, run instead of
+    STOP_TASK_SEQUENCE when special=True (see mission_ops_config.
+    phase_params[1]["special_sequence"]) -- freely repeat/reorder/omit
+    tasks by listing keys however you want; repeats are literal (list a key
+    twice for it to run twice) rather than going through repeat_counts.
+    Must contain "image_downlink" exactly once.
+
+    nap_curve/mission_start_lunar_hour/lunar_day_hours: if nap_curve is
+    given (see mission_ops_config.py), every "nap" task's duration is
+    computed from nap_duration_s at the moment it starts, instead of the
+    flat config_time["nap_time"]. None (default) keeps the flat value.
+
+    skip_tasks: optional set of TASK_CATALOG keys to omit entirely from the
+    ordinary (non-special) sequence at this stop (see mission_ops_config.
+    phase_params[<phase>]["task_intervals"] -- build_mission works out, per
+    stop, which tasks fall outside their configured "every Nth stop"
+    interval). "image_downlink" is always exempt regardless of what's
+    passed in -- it anchors earth_analysis's start time and must occur
+    exactly once per stop. Ignored when special=True (special_sequence is
+    already a complete, self-contained plan).
     """
     tasks = []
     t = start_time
     repeat_counts = repeat_counts or {}
+    skip_tasks = (skip_tasks or set()) - {"image_downlink"}
 
     def append_task(key, display, actor, duration):
         nonlocal t
@@ -106,16 +193,30 @@ def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, con
     if localization and config_time.get("turn_time", 0) > 0:
         append_task("turn", "localization turn", "rover", config_time["turn_time"])
 
-    sequence = SPECIAL_STOP_TASK_SEQUENCE if special else STOP_TASK_SEQUENCE
-    sequence_name = "SPECIAL_STOP_TASK_SEQUENCE" if special else "STOP_TASK_SEQUENCE"
+    if special:
+        assert special_sequence, ('special=True requires mission_ops_config.'
+                                   'phase_params[<phase>]["special_sequence"] to be set')
+        sequence = [(key,) + TASK_CATALOG[key] for key in special_sequence]
+        sequence_name = "special_sequence"
+    else:
+        sequence = STOP_TASK_SEQUENCE
+        sequence_name = "STOP_TASK_SEQUENCE"
 
     image_downlink_end = None
     for key, display, actor in sequence:
-        for _ in range(repeat_counts.get(key, 1)):
-            append_task(key, display, actor, config_time[f"{key}_time"])
+        if not special and key in skip_tasks:
+            continue
+        n = 1 if special else repeat_counts.get(key, 1)
+        for _ in range(n):
+            if key == "nap" and nap_curve is not None:
+                duration = nap_duration_s(t, config_time["nap_time"], nap_curve,
+                                           mission_start_lunar_hour, lunar_day_hours)
+            else:
+                duration = config_time[f"{key}_time"]
+            append_task(key, display, actor, duration)
             if key == "image_downlink":
                 image_downlink_end = t
-    assert image_downlink_end is not None, f'"image_downlink" must be in {sequence_name}'
+    assert image_downlink_end is not None, f'"image_downlink" must appear exactly once in {sequence_name}'
     nap_end = t
 
     # Parallel activities. earth_analysis starts once the nav image has
@@ -138,7 +239,8 @@ def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, con
 
 
 def build_mission(segments, velocity, config_time, config_power_robot, localization_interval=None,
-                   phase_params=None):
+                   phase_params=None, nap_curve=None, mission_start_lunar_hour=0.0,
+                   lunar_day_hours=708.7, locomotion_experiment=None, locomotion_config=None):
     """
     segments: list of {"distance": meters, "turns": count}, one per drive leg
     between measurement/downlink stops (see path_analyzer.build_drive_segments).
@@ -147,17 +249,39 @@ def build_mission(segments, velocity, config_time, config_power_robot, localizat
     (each segment generates exactly one stop, so this is equivalently every
     Nth segment/stop). None (default) never forces one.
 
-    phase_params: optional {phase: {"num_pictures": N, "special_num_pictures":
-    N, "special_num_spec_measurements": N, ...}} (see mission_ops_config.py).
-    Drives the picture-count-per-stop for ordinary stops (per phase) and, for
-    segments tagged "special" by build_drive_segments, the picture/SPEC
-    counts for SPECIAL_STOP_TASK_SEQUENCE instead. None (default) keeps
-    today's behavior: exactly 1 picture per stop, never special.
+    phase_params: optional {phase: {"num_pictures": N, "special_sequence":
+    [...], "task_intervals": {...}}} (see mission_ops_config.py).
+    num_pictures drives the picture count per ordinary stop in that phase.
+    special_sequence (a list of TASK_CATALOG keys, see
+    generate_waypoint_tasks) is required for any phase that can have
+    segments tagged "special" by build_drive_segments -- it replaces
+    STOP_TASK_SEQUENCE entirely at that stop. task_intervals ({key: N} for
+    grav_measurement/spec_measurement/scicam_measurement/relay) makes that
+    task run only every Nth measurement/stop instead of every stop -- same
+    "every Nth" cadence as localization_interval below, just per task; keys
+    not listed default to every stop (interval 1), and this never applies
+    to special stops. None (default) keeps today's behavior: exactly 1
+    picture per stop, every task every stop, never special.
+
+    nap_curve/mission_start_lunar_hour/lunar_day_hours: see
+    generate_waypoint_tasks/nap_duration_s. nap_curve=None (default) keeps
+    every nap at the flat config_time["nap_time"].
+
+    locomotion_experiment/locomotion_config: locomotion_experiment (see
+    mission_ops_config.py) is {"trigger_after_special_occurrence": [1, 2,
+    ...], "sequence": [...]} -- a standalone block of locomotion_config
+    tasks (see generate_locomotion_experiment_tasks) is inserted right
+    after the Nth special-waypoint stop finishes, for each N listed (1 =
+    after the 1st special stop, 2 = after the 2nd, etc.). Either argument
+    None (default) never inserts one.
     """
 
     timeline = []
     t = 0
     measurement_count = 0
+    special_occurrence_count = 0
+    locomotion_trigger_occurrences = set(
+        (locomotion_experiment or {}).get("trigger_after_special_occurrence", []))
 
     for seg in segments:
 
@@ -170,18 +294,30 @@ def build_mission(segments, velocity, config_time, config_power_robot, localizat
         phase = seg.get("phase", 0)
         special = seg.get("special", False)
         params = (phase_params or {}).get(phase, {})
-        if special:
-            repeat_counts = {"picture": params.get("special_num_pictures", 1),
-                              "spec_measurement": params.get("special_num_spec_measurements", 1)}
-        else:
-            repeat_counts = {"picture": params.get("num_pictures", 1)}
+        repeat_counts = {"picture": params.get("num_pictures", 1)}
+        special_sequence = params.get("special_sequence") if special else None
+
+        task_intervals = params.get("task_intervals", {})
+        skip_tasks = {key for key, interval in task_intervals.items()
+                      if interval and measurement_count % interval != 0}
 
         tasks, t = generate_waypoint_tasks(
             t, travel_time, turn_time, config_time, config_power_robot,
-            phase=phase, localization=localization, special=special, repeat_counts=repeat_counts
+            phase=phase, localization=localization, special=special,
+            repeat_counts=repeat_counts, special_sequence=special_sequence,
+            nap_curve=nap_curve, mission_start_lunar_hour=mission_start_lunar_hour,
+            lunar_day_hours=lunar_day_hours, skip_tasks=skip_tasks
         )
 
         timeline.extend(tasks)
+
+        if special:
+            special_occurrence_count += 1
+            if (locomotion_experiment and locomotion_config
+                    and special_occurrence_count in locomotion_trigger_occurrences):
+                loco_tasks, t = generate_locomotion_experiment_tasks(
+                    t, locomotion_experiment["sequence"], locomotion_config, phase=phase)
+                timeline.extend(loco_tasks)
 
     return timeline
 
@@ -263,6 +399,12 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
     if velocity is not None:
         ax.set_title(f"Total distance driven: {cumulative_distance_m:.0f} m")
 
+    # thin, faint separator at the start of every stop (marked by "Walk"),
+    # so consecutive stops are easy to tell apart at a glance
+    for task in tasks:
+        if task.name == "Walk":
+            ax.axvline(task.start / 60, color="#c3c2b7", linewidth=0.6, alpha=0.4, zorder=0)
+
     # phase-change markers: a faint dashed line at the midpoint between the
     # last task of one phase and the first task of the next (tasks aren't
     # strictly ordered by phase at the boundary -- earth-side tasks of the
@@ -330,6 +472,13 @@ def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
                 fig.add_annotation(
                     x=(t.start + (t.end - t.start) / 2) / 60, y=t.name,
                     text=f"{leg_distance_m:.0f} m", showarrow=False, font=dict(size=14))
+
+    # thin, faint separator at the start of every stop (marked by "Walk"),
+    # so consecutive stops are easy to tell apart at a glance
+    for t in tasks:
+        if t.name == "Walk":
+            fig.add_vline(x=t.start / 60, line_color="#c3c2b7", line_width=0.6,
+                           opacity=0.4, layer="below")
 
     phases_present = sorted(set(task.phase for task in tasks))
     for p0, p1 in zip(phases_present[:-1], phases_present[1:]):

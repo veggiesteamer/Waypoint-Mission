@@ -192,15 +192,28 @@ def build_drive_segments(path, map_resolution, step_m, angle_threshold_deg=10, w
     trigger_ptr = 0
 
     def consume_special_trigger(end_vertex_idx):
+        # A trigger only ever fires on a genuinely phase-1 segment -- the
+        # only special_sequence that exists to run is phase 1's (see
+        # build_mission), so a segment that still resolves to phase 0 can
+        # never be tagged special, no matter what. But a *pending* trigger
+        # whose own vertex sits at/before the phase boundary (e.g. a special
+        # waypoint placed right at the pit entrance, which is itself still
+        # counted as the last phase-0 stop -- see phase_at) is NOT dropped
+        # here: trigger_ptr is left untouched so it carries over and gets
+        # claimed by the first later segment that *does* close in phase 1,
+        # i.e. "trigger right after this waypoint is passed" rather than
+        # silently losing the occurrence. Consumes at most one pending
+        # trigger per call even if several qualify, so two special waypoints
+        # sharing one oversized simplified-path vector (see this function's
+        # chunking loop below) still get one stop each instead of collapsing
+        # onto the same early chunk-close.
         nonlocal trigger_ptr
-        triggered = False
-        while trigger_ptr < len(trigger_idxs) and trigger_idxs[trigger_ptr] <= end_vertex_idx:
-            triggered = True
+        if phase_at(end_vertex_idx) != 1:
+            return False
+        if trigger_ptr < len(trigger_idxs) and trigger_idxs[trigger_ptr] <= end_vertex_idx:
             trigger_ptr += 1
-        # gated on the segment's real phase -- when phase splitting is off,
-        # phase_at always returns 0, so this naturally never fires even
-        # though phase_boundary_idx can be None
-        return triggered and phase_at(end_vertex_idx) == 1
+            return True
+        return False
 
     segments = []
     acc_dist = 0.0

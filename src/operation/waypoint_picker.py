@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import math
 from pathlib import Path
@@ -7,10 +9,23 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.collections import PatchCollection
 import numpy as np
+import plotly.graph_objects as go
 
 
 def _grid_to_m(row: float, col: float, resolution: float) -> Tuple[float, float]:
     return col / resolution, row / resolution
+
+
+def start_point_on_circle_m(center_m: Tuple[float, float], radius_m: float,
+                             angle_deg: float) -> Tuple[float, float]:
+    """
+    Point at a given bearing on a circle of radius_m around center_m (both
+    in meters), in meters. angle_deg is measured counterclockwise from +X
+    (standard math convention: 0 deg = east of center, 90 deg = north).
+    """
+    angle_rad = math.radians(angle_deg)
+    return (center_m[0] + radius_m * math.cos(angle_rad),
+            center_m[1] + radius_m * math.sin(angle_rad))
 
 
 def start_point_from_circle(center_m: Tuple[float, float], radius_m: float, angle_deg: float,
@@ -21,9 +36,7 @@ def start_point_from_circle(center_m: Tuple[float, float], radius_m: float, angl
     is measured counterclockwise from +X (standard math convention: 0 deg =
     east of center, 90 deg = north of center).
     """
-    angle_rad = math.radians(angle_deg)
-    x_m = center_m[0] + radius_m * math.cos(angle_rad)
-    y_m = center_m[1] + radius_m * math.sin(angle_rad)
+    x_m, y_m = start_point_on_circle_m(center_m, radius_m, angle_deg)
     return int(round(y_m * resolution)), int(round(x_m * resolution))
 
 
@@ -129,6 +142,7 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
                     start_area_radius_m: Optional[float] = None,
                     start_circle_center_m: Optional[Tuple[float, float]] = None,
                     start_circle_radius_m: Optional[float] = None,
+                    preview_point_m: Optional[Tuple[float, float]] = None,
                     boulder_centers_m: Optional[np.ndarray] = None,
                     boulder_radii_m: Optional[np.ndarray] = None,
                     boulder_safety_margin_m: Optional[float] = None,
@@ -140,18 +154,24 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
     the mission's start/landing point followed by an ordered sequence of
     waypoints, all returned in grid pixel coordinates. If start is already
     given, it's fixed (drawn immediately) and every click places a waypoint;
-    if start is None, the first click sets it -- drawing the landing zone /
-    start area circles around it -- and every click after that places a
-    waypoint. Use the normal matplotlib toolbar to zoom/pan freely -- a
-    placement only registers if the mouse is released within a few pixels of
-    where it was pressed, so a zoom/pan drag never drops a stray point, and
-    (unlike checking the toolbar's mode) this also keeps working right after
-    the zoom/pan tool was used, without needing to click it off first.
+    if start is None, the landing zone / start area circles are previewed
+    around preview_point_m (falls back to start_circle_center_m if not
+    given -- pass the actual point on the start circle, e.g.
+    start_point_on_circle_m, rather than its center, so the preview lands
+    on a real candidate spot instead of the circle's abstract middle) so
+    there's a target to click near, then the first click sets the actual
+    start point -- moving those circles to be centered on it instead -- and
+    every click after that places a waypoint. Use the normal matplotlib
+    toolbar to zoom/pan freely -- a placement only registers if the mouse is
+    released within a few pixels of where it was pressed, so a zoom/pan drag
+    never drops a stray point, and (unlike checking the toolbar's mode) this
+    also keeps working right after the zoom/pan tool was used, without
+    needing to click it off first.
     A line grows between placed points so
     the route being built stays visible. Press 'z' to undo the last point
     (a waypoint if any are placed, otherwise the start point itself, if it
-    was picked interactively). Returns (start, waypoints) once the figure
-    window is closed.
+    was picked interactively -- restoring the landing zone preview). Returns
+    (start, waypoints) once the figure window is closed.
     """
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_map_meters(ax, grid, resolution)
@@ -163,14 +183,33 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
     waypoints: List[Tuple[int, int]] = []
     markers = []
     start_artists = []
+    preview_artists = []
     route_line, = ax.plot([], [], "y-", linewidth=2, alpha=0.8)
+    preview_center_m = preview_point_m if preview_point_m is not None else start_circle_center_m
 
     def current_title():
         if picked["start"] is None:
             return start_title
         return f"{waypoint_title}\n(resolution: {resolution:.2f} px/m) - {len(waypoints)} waypoint(s)"
 
+    def show_landing_zone_preview():
+        if preview_center_m is None:
+            return
+        if landing_zone_radius_m:
+            preview_artists.append(ax.add_patch(Circle(
+                preview_center_m, landing_zone_radius_m,
+                facecolor="orange", edgecolor="orange", alpha=0.15, label="Landing zone")))
+        if start_area_radius_m:
+            preview_artists.append(ax.add_patch(Circle(
+                preview_center_m, start_area_radius_m,
+                facecolor="red", edgecolor="red", alpha=0.25, label="Start area")))
+        ax.legend(loc="upper right")
+
     def draw_start(row, col):
+        for artist in preview_artists:
+            artist.remove()
+        preview_artists.clear()
+
         x_m, y_m = _grid_to_m(row, col, resolution)
         if landing_zone_radius_m:
             start_artists.append(ax.add_patch(Circle(
@@ -186,6 +225,8 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
 
     if picked["start"] is not None:
         draw_start(*picked["start"])
+    elif pick_start_interactively:
+        show_landing_zone_preview()
 
     ax.set_title(current_title())
 
@@ -246,6 +287,7 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
             for artist in start_artists:
                 artist.remove()
             start_artists.clear()
+            show_landing_zone_preview()
         else:
             return
 
@@ -405,3 +447,109 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
 
     fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
+
+
+def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], resolution: float, output_path,
+                                 waypoints: Optional[List[Tuple[int, int]]] = None,
+                                 special_waypoints: Optional[List[Tuple[int, int]]] = None,
+                                 start: Optional[Tuple[int, int]] = None,
+                                 landing_zone_radius_m: Optional[float] = None,
+                                 start_area_radius_m: Optional[float] = None,
+                                 start_circle_center_m: Optional[Tuple[float, float]] = None,
+                                 start_circle_radius_m: Optional[float] = None,
+                                 boulder_centers_m: Optional[np.ndarray] = None,
+                                 boulder_radii_m: Optional[np.ndarray] = None,
+                                 boulder_safety_margin_m: Optional[float] = None,
+                                 corridor_width_m: Optional[float] = None,
+                                 background_dpi: int = 400):
+    """
+    Interactive Plotly equivalent of save_route_plot, saved as a
+    self-contained .html file (same pattern as
+    conops_planner.plot_timeline_interactive). Opens in a browser with the
+    same scroll-to-zoom/drag-to-pan behavior as the live matplotlib window --
+    the axis re-renders at whatever zoom level you're at, unlike a static
+    PNG/PDF whose ticks are baked in for the full-map view.
+
+    The dense hazard-field layers (grid cells, boulder safety halos, path
+    corridor band -- routinely hundreds of thousands of craters/boulders,
+    far too many to redraw as individual interactive shapes without the
+    page becoming huge/sluggish) are baked into one raster image and
+    embedded as a fixed background. The actual route -- path, waypoints,
+    start/landing/start-circle zones -- is redrawn as live Plotly
+    traces/shapes on top, so those stay crisp and hoverable at any zoom.
+    Background image detail is capped by background_dpi: zooming far enough
+    past that will start to blur the grid/halos even though the overlay
+    keeps its own resolution.
+    """
+    height_m = grid.shape[0] / resolution
+    width_m = grid.shape[1] / resolution
+
+    bg_fig, bg_ax = plt.subplots(figsize=(10, 10))
+    bg_ax.set_position([0, 0, 1, 1])  # fill the whole figure so the raster maps 1:1 onto [0,width_m]x[0,height_m]
+    _draw_map_meters(bg_ax, grid, resolution)
+    _draw_boulder_safety_halos(bg_ax, boulder_centers_m, boulder_radii_m, boulder_safety_margin_m)
+    _draw_path_corridor(bg_ax, path, resolution, corridor_width_m)
+    bg_ax.set_xlim(0, width_m)
+    bg_ax.set_ylim(0, height_m)
+    bg_ax.axis("off")
+    buf = io.BytesIO()
+    bg_fig.savefig(buf, format="png", dpi=background_dpi)
+    plt.close(bg_fig)
+    background_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    fig = go.Figure()
+    fig.add_layout_image(dict(
+        source=background_uri, xref="x", yref="y",
+        x=0, y=height_m, xanchor="left", yanchor="top",
+        sizex=width_m, sizey=height_m, sizing="stretch", layer="below"))
+
+    def add_circle(center_m, radius_m, color, fill_alpha=None, dash=None):
+        if center_m is None or not radius_m:
+            return
+        fig.add_shape(
+            type="circle",
+            x0=center_m[0] - radius_m, y0=center_m[1] - radius_m,
+            x1=center_m[0] + radius_m, y1=center_m[1] + radius_m,
+            line=dict(color=color, dash=dash, width=1.5),
+            fillcolor=color if fill_alpha is not None else None,
+            opacity=fill_alpha if fill_alpha is not None else 1.0)
+
+    add_circle(start_circle_center_m, start_circle_radius_m, "cyan", dash="dash")
+    if start is not None:
+        start_m = _grid_to_m(start[0], start[1], resolution)
+        add_circle(start_m, landing_zone_radius_m, "orange", fill_alpha=0.15)
+        add_circle(start_m, start_area_radius_m, "red", fill_alpha=0.25)
+
+    if path:
+        path_m = [_grid_to_m(r, c, resolution) for r, c in path]
+        fig.add_trace(go.Scatter(
+            x=[p[0] for p in path_m], y=[p[1] for p in path_m],
+            mode="lines", line=dict(color="blue", width=3), name="Path", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=[path_m[0][0]], y=[path_m[0][1]], mode="markers",
+            marker=dict(color="green", size=14), name="Start", hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=[path_m[-1][0]], y=[path_m[-1][1]], mode="markers",
+            marker=dict(color="red", size=14), name="Goal", hoverinfo="skip"))
+
+    if waypoints:
+        special_set = set(special_waypoints) if special_waypoints else set()
+        regular = [(i, wp) for i, wp in enumerate(waypoints, start=1) if wp not in special_set]
+        special = [(i, wp) for i, wp in enumerate(waypoints, start=1) if wp in special_set]
+        for group, color, name in ((regular, "yellow", "Waypoint"), (special, "magenta", "Special waypoint")):
+            if not group:
+                continue
+            pts_m = [_grid_to_m(r, c, resolution) for _, (r, c) in group]
+            fig.add_trace(go.Scatter(
+                x=[p[0] for p in pts_m], y=[p[1] for p in pts_m],
+                mode="markers+text", text=[str(i) for i, _ in group], textposition="top center",
+                marker=dict(color=color, size=12, line=dict(color="black", width=1)), name=name))
+
+    fig.update_xaxes(range=[0, width_m], title="X [m]", constrain="domain")
+    fig.update_yaxes(range=[0, height_m], title="Y [m]", scaleanchor="x", scaleratio=1)
+    fig.update_layout(
+        title=f"Planned Route (resolution: {resolution:.2f} px/m)",
+        height=900, width=900,
+        legend=dict(x=1.02, y=1, xanchor="left"))
+
+    fig.write_html(output_path)

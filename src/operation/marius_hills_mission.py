@@ -3,6 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import pandas as pd
 
 from src.operation import conops_planner
 from src.operation import path_analyzer
@@ -28,6 +29,7 @@ def _phase_metrics(tasks, segments):
         "mission_time_h": mission_time / 3600,
         "walking_distance_m": sum(seg["distance"] for seg in segments),
         "num_stops": len(segments),
+        "special_stop_count": sum(1 for seg in segments if seg.get("special")),
         "activity_breakdown_h": {name: total / 3600 for name, total in durations.items()},
         "activity_energy_wh": dict(energy_wh),
         "total_energy_wh": sum(energy_wh.values()),
@@ -35,20 +37,77 @@ def _phase_metrics(tasks, segments):
     }
 
 
-def generate_mission_report(timeline, segments, phase_names=None):
+def _report_to_excel(report, excel_path, special_sequence_name):
+    """
+    Same numbers as the printed/text report, reshaped into two tidy tables
+    (one row per scope/activity, easy to filter/pivot/chart in Excel)
+    instead of the indented plain-text layout.
+    """
+    def overview_row(scope, r):
+        return {
+            "Scope": scope,
+            "Mission time (h)": r["mission_time_h"],
+            "Walking distance (m)": r["walking_distance_m"],
+            "Number of stops": r["num_stops"],
+            f"{special_sequence_name} (x)": r["special_stop_count"],
+            "Total energy (Wh)": r["total_energy_wh"],
+        }
+
+    def activity_rows(scope, r):
+        return [{
+            "Scope": scope,
+            "Activity": name,
+            "Count": r["activity_count"][name],
+            "Time (h)": r["activity_breakdown_h"][name],
+            "Energy (Wh)": r["activity_energy_wh"][name],
+        } for name in r["activity_breakdown_h"]]
+
+    phases = report.get("phases", {})
+    overview_df = pd.DataFrame(
+        [overview_row("Overall", report)] + [overview_row(name, r) for name, r in phases.items()])
+    activity_df = pd.DataFrame(
+        activity_rows("Overall", report) + [row for name, r in phases.items() for row in activity_rows(name, r)])
+
+    with pd.ExcelWriter(excel_path) as writer:
+        overview_df.to_excel(writer, sheet_name="Overview", index=False)
+        activity_df.to_excel(writer, sheet_name="Activity Breakdown", index=False)
+
+
+def generate_mission_report(timeline, segments, phase_names=None, excel_path=None,
+                             special_sequence_name=None):
+    """
+    Same summary as before, but built up as text first: always printed to
+    stdout, and also written to excel_path (if given, see _report_to_excel)
+    so it survives past the terminal in a form you can filter/pivot -- e.g.
+    alongside Mission_Timeline.png/Route_Plot.html in the run folder, see
+    run_mission_planning.
+
+    special_sequence_name: display label for special stops (see
+    mission_ops_config.phase_params[1].special_sequence_name), shown as its
+    own "Nx" line wherever special stops occurred, separate from the
+    individual task rows they're made of. None (default) falls back to a
+    generic "Special stops" label.
+    """
+    special_sequence_name = special_sequence_name or "Special stops"
     report = _phase_metrics(timeline, segments)
+    lines = []
+
+    def line(text=""):
+        lines.append(text)
 
     def report_line(name, value, indent=""):
-        print(f"{indent}{name:25s}: {value}")
+        lines.append(f"{indent}{name:25s}: {value}")
 
-    print("\n============== Mission Summary ==============\n")
+    line("\n============== Mission Summary ==============\n")
     report_line("Total mission time", f"{report['mission_time_h']:.2f} h")
     report_line("Walking distance", f"{report['walking_distance_m']:.2f} m")
     report_line("Number of stops", f"{report['num_stops']}")
+    if report["special_stop_count"]:
+        report_line(special_sequence_name, f"{report['special_stop_count']}x")
     report_line("Total energy", f"{report['total_energy_wh']:.1f} Wh\n")
 
-    print("Activity breakdown (count / time / energy)")
-    print("---------------------------------------------")
+    line("Activity breakdown (count / time / energy)")
+    line("---------------------------------------------")
     for name, total_h in report["activity_breakdown_h"].items():
         report_line(name, f"{report['activity_count'][name]}x  /  "
                            f"{total_h:.2f} h  /  {report['activity_energy_wh'][name]:.1f} Wh")
@@ -60,13 +119,15 @@ def generate_mission_report(timeline, segments, phase_names=None):
             phase_segments = [s for s in segments if s["phase"] == phase_idx]
             phases[phase_name] = _phase_metrics(phase_tasks, phase_segments)
 
-        print("\nBy phase")
-        print("---------------------------------------------")
+        line("\nBy phase")
+        line("---------------------------------------------")
         for phase_name, phase_report in phases.items():
-            print(f"\n{phase_name}")
+            line(f"\n{phase_name}")
             report_line("Mission time", f"{phase_report['mission_time_h']:.2f} h", indent="  ")
             report_line("Walking distance", f"{phase_report['walking_distance_m']:.2f} m", indent="  ")
             report_line("Number of stops", f"{phase_report['num_stops']}", indent="  ")
+            if phase_report["special_stop_count"]:
+                report_line(special_sequence_name, f"{phase_report['special_stop_count']}x", indent="  ")
             report_line("Total energy", f"{phase_report['total_energy_wh']:.1f} Wh", indent="  ")
             for name, total_h in phase_report["activity_breakdown_h"].items():
                 report_line(name, f"{phase_report['activity_count'][name]}x  /  "
@@ -75,15 +136,27 @@ def generate_mission_report(timeline, segments, phase_names=None):
 
         report["phases"] = phases
 
-    print("\n=============================================\n")
+    line("\n=============================================\n")
+
+    text = "\n".join(lines)
+    print(text)
+    if excel_path is not None:
+        _report_to_excel(report, excel_path, special_sequence_name)
+
     return report
 
 
 def run_mission_planning(experiment, mission_config, robot_time_config, robot_power_config,
-                          timeline_image_path: str | os.PathLike = "Marius_Hills_Mission_Timeline.png"):
+                          timeline_image_path: str | os.PathLike = "Marius_Hills_Mission_Timeline.png",
+                          locomotion_config=None):
     """
     Build a mission timeline from an already-computed path (as saved by
     marius_hills_review.run_simulation) instead of re-running path planning.
+
+    locomotion_config: time/power values for mission_config["locomotion_
+    experiment"]'s tasks (see user_data/config_robot/
+    locomotion_experiment_config.py). None (default) means no locomotion-
+    experiment blocks get inserted, even if locomotion_experiment is set.
     """
     if not experiment["result"]["success"] or experiment["path"] is None:
         raise ValueError("experiment has no successful path to plan a mission from")
@@ -136,10 +209,24 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     # stop/segment -- see conops_planner.build_mission).
     localization_interval = mission_config.get("localization_interval_measurements")
 
+    # Nap duration follows a lunar-day thermal/power cycle instead of a
+    # flat value when nap_curve is set (see conops_planner.nap_duration_s).
+    nap_curve = mission_config.get("nap_curve")
+    mission_start_lunar_hour = mission_config.get("mission_start_lunar_hour", 0.0)
+    lunar_day_hours = mission_config.get("lunar_day_hours", 708.7)
+
+    # Locomotion-experiment blocks inserted after specific special-waypoint
+    # occurrences (see conops_planner.build_mission/generate_locomotion_
+    # experiment_tasks).
+    locomotion_experiment = mission_config.get("locomotion_experiment")
+
     velocity = mission_config["robot_velocity"]
     timeline = conops_planner.build_mission(
         segments, velocity, robot_time_config, robot_power_config,
-        localization_interval=localization_interval, phase_params=phase_params)
+        localization_interval=localization_interval, phase_params=phase_params,
+        nap_curve=nap_curve, mission_start_lunar_hour=mission_start_lunar_hour,
+        lunar_day_hours=lunar_day_hours, locomotion_experiment=locomotion_experiment,
+        locomotion_config=locomotion_config)
 
     fig = conops_planner.plot_timeline(timeline, show=False, velocity=velocity, phase_names=phase_names)
     fig.savefig(timeline_image_path, dpi=300)
@@ -153,7 +240,10 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
         timeline, velocity=velocity, phase_names=phase_names)
     interactive_fig.write_html(Path(timeline_image_path).with_suffix(".html"))
 
-    report = generate_mission_report(timeline, segments, phase_names=phase_names)
+    special_sequence_name = (phase_params or {}).get(1, {}).get("special_sequence_name")
+    excel_path = Path(timeline_image_path).with_name("Mission_Summary.xlsx")
+    report = generate_mission_report(timeline, segments, phase_names=phase_names, excel_path=excel_path,
+                                      special_sequence_name=special_sequence_name)
 
     # serialized for provenance/playback -- lets a later viewer (see
     # src/operation/mission_playback.py) reconstruct the timeline exactly as

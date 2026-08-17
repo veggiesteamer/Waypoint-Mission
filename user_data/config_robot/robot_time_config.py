@@ -11,6 +11,6 @@ config = {
     "scicam_measurement_time": 5,  # "SciCAM measurement" (OPS-17)
     "relay_time": 675,  # "Payload data downlink" (OPS-12-b)
     "nap_time": 400,  # "Nap" (OPS-20)
-    "earth_analysis_time": 600,  # "Mission Ops Decision"
+    "earth_analysis_time": 300,  # "Mission Ops Decision"
     "uplink_time": 15,  # "Uplink"
 }

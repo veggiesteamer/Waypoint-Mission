@@ -72,6 +72,36 @@ def load_mhp_pit_outline(path, frame):
     return np.column_stack((x_norm, y_norm))
 
 
+def _polygon_centroid(vertices_m):
+    """
+    Area-weighted centroid of a simple closed polygon (shoelace formula) --
+    not just the mean of its vertices, which would be skewed toward
+    wherever they happen to be spaced more densely along the boundary.
+    Works whether or not the input already repeats the first vertex at the
+    end (that edge just contributes zero to every sum).
+    """
+    x = vertices_m[:, 0]
+    y = vertices_m[:, 1]
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+    cross = x * y_next - x_next * y
+    area = cross.sum() / 2.0
+    cx = ((x + x_next) * cross).sum() / (6 * area)
+    cy = ((y + y_next) * cross).sum() / (6 * area)
+    return float(cx), float(cy)
+
+
+def _pit_centroid_m(config):
+    """
+    Pit outline's centroid, in map meters -- cheap to (re)compute from the
+    source CSV/JSON each call, independent of the (potentially cached)
+    rasterized grid -- see load_or_generate_map.
+    """
+    _, _, mhp_frame = load_mhp_craters(config["csv_path"])
+    pit_outline = load_mhp_pit_outline(config["pit_outline_path"], mhp_frame)
+    return _polygon_centroid(pit_outline * config["map_size_m"])
+
+
 def save_path_plot(grid, path, output_path):
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(grid, cmap='binary', origin='lower')
@@ -118,13 +148,22 @@ def generate_map(config, dist_image_path="Marius_Hills_Mapped.png",
 
     center_MHP, radius_MHP, mhp_frame = load_mhp_craters(config["csv_path"])
     pit_outline = load_mhp_pit_outline(config["pit_outline_path"], mhp_frame)
+    pit_centroid_m = _polygon_centroid(pit_outline * map_distance_meter)
+
+    # None (default) -- fresh/different synthetic craters+boulders every
+    # call, same as before this config key existed. An int makes the whole
+    # map reproducible; craters and boulders get different-but-derived
+    # seeds so they're not identical random streams.
+    seed = config.get("random_seed")
+    crater_seed = seed
+    boulder_seed = None if seed is None else seed + 1
 
     center_crater, radius_crater = distribution_generator.center_radius_generator_distribution(
         map_distance_meter, map_resolution, keep_out_crater, robot_footprint,
-        k_crater, b_crater, Dmin_crater, Dmax_crater)
+        k_crater, b_crater, Dmin_crater, Dmax_crater, seed=crater_seed)
     center_boulder, radius_boulder = distribution_generator.center_radius_generator_distribution(
         map_distance_meter, map_resolution, keep_out_boulder, robot_footprint,
-        k_boulder, b_boulder, Dmin_boulder, Dmax_boulder)
+        k_boulder, b_boulder, Dmin_boulder, Dmax_boulder, seed=boulder_seed)
 
     lunar_distribution_data = {
         "center": np.vstack([center_MHP, center_crater, center_boulder]),
@@ -138,7 +177,8 @@ def generate_map(config, dist_image_path="Marius_Hills_Mapped.png",
         map_distance_meter, map_resolution, lunar_distribution_data,
         show_MHP=True, show_craters=True, show_boulders=True,
         pit_outline=pit_outline, show_pit=True,
-        faint_radius_threshold_m=config["faint_radius_threshold_m"])
+        faint_radius_threshold_m=config["faint_radius_threshold_m"],
+        pit_centroid_m=pit_centroid_m)
     fig = plt.gcf()
     fig.savefig(dist_image_path, dpi=300)
     plt.close(fig)
@@ -176,6 +216,7 @@ def generate_map(config, dist_image_path="Marius_Hills_Mapped.png",
         # around each one on top of the (per-object-identity-free) binary grid
         "boulder_centers_m": center_boulder * map_distance_meter,
         "boulder_radii_m": radius_boulder,
+        "pit_centroid_m": pit_centroid_m,
     }
 
 
@@ -191,9 +232,10 @@ def load_or_generate_map(config, cache_path, dist_image_path="Marius_Hills_Mappe
     cache_path = Path(cache_path)
     if cache_path.exists():
         with np.load(cache_path) as data:
-            # boulder_centers_m/radii_m predate older cache files -- fall back
-            # to empty arrays rather than KeyError so old caches keep loading
-            # (just without the boulder safety-halo overlay until regenerated)
+            # boulder_centers_m/radii_m/pit_centroid_m predate older cache
+            # files -- fall back rather than KeyError so old caches keep
+            # loading (pit_centroid_m is cheap enough to just recompute from
+            # the source CSV/JSON instead of caching it at all)
             has_boulders = "boulder_centers_m" in data.files
             return {
                 "grid": data["grid"],
@@ -205,6 +247,7 @@ def load_or_generate_map(config, cache_path, dist_image_path="Marius_Hills_Mappe
                 "num_mhp_craters": int(data["num_mhp_craters"]),
                 "boulder_centers_m": data["boulder_centers_m"] if has_boulders else np.empty((0, 2)),
                 "boulder_radii_m": data["boulder_radii_m"] if has_boulders else np.empty((0,)),
+                "pit_centroid_m": _pit_centroid_m(config),
             }
 
     map_data = generate_map(config, dist_image_path, raster_image_path)
