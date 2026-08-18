@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Circle
 
 from src.operation import conops_planner
 from src.operation import path_analyzer
@@ -87,7 +90,8 @@ if raw_path:
 # ---- mission timeline Gantt chart -- reuses the exact plotting code the run itself used ----
 tasks = [conops_planner.Task(t["name"], t["actor"], t["start"], t["end"], t["phase"]) for t in results["timeline"]]
 conops_planner.plot_timeline(tasks, show=False, velocity=mission_config.get("robot_velocity"),
-                              phase_names=phase_names or None)
+                              phase_names=phase_names or None,
+                              time_offset_h=mission_config.get("mission_start_lunar_hour", 0.0))
 
 # ---- activity time breakdown by phase, stacked bar ----
 if phases:
@@ -136,5 +140,61 @@ if raw_path:
     ax.legend(loc="best")
     ax.set_title("Raw vs. simplified path")
     plt.tight_layout()
+
+# ---- vectorized hazard field around the route, from the exact circle
+# geometry (see plan_waypoint_mission.py's Hazards.npz) instead of a
+# raster -- opened as a live matplotlib window, this has no resolution
+# ceiling: zoom in as far as you want and craters/boulders stay perfectly
+# sharp, unlike Route_Plot.html's baked-raster background. Restricted to
+# the route's own bounding box (+ margin) since a live redraw of the full
+# map's hundreds of thousands of circles would be sluggish to interact with.
+hazards_path = run_dir / "Hazards.npz"
+if hazards_path.exists():
+    hazards = np.load(hazards_path)
+    path_m = np.array([(c / resolution, r / resolution) for r, c in simplified_path])
+    margin_m = 20.0
+    x0, x1 = path_m[:, 0].min() - margin_m, path_m[:, 0].max() + margin_m
+    y0, y1 = path_m[:, 1].min() - margin_m, path_m[:, 1].max() + margin_m
+
+    def _in_view(centers, radii):
+        if len(centers) == 0:
+            return centers, radii
+        mask = ((centers[:, 0] + radii >= x0) & (centers[:, 0] - radii <= x1) &
+                (centers[:, 1] + radii >= y0) & (centers[:, 1] - radii <= y1))
+        return centers[mask], radii[mask]
+
+    crater_centers, crater_radii = _in_view(hazards["crater_centers_m"], hazards["crater_radii_m"])
+    boulder_centers, boulder_radii = _in_view(hazards["boulder_centers_m"], hazards["boulder_radii_m"])
+    # pit_outline_m predates older Hazards.npz files -- fall back gracefully
+    pit_outline = hazards["pit_outline_m"] if "pit_outline_m" in hazards.files else np.empty((0, 2))
+
+    fig, ax = plt.subplots(figsize=(9, 9))
+    if len(crater_centers):
+        ax.add_collection(PatchCollection(
+            [Circle(c, r) for c, r in zip(crater_centers, crater_radii)],
+            facecolor="tan", edgecolor="none", alpha=0.5, label=f"Craters ({len(crater_centers)})"))
+    if len(boulder_centers):
+        ax.add_collection(PatchCollection(
+            [Circle(c, r) for c, r in zip(boulder_centers, boulder_radii)],
+            facecolor="dimgray", edgecolor="none", alpha=0.7, label=f"Boulders ({len(boulder_centers)})"))
+    if len(pit_outline):
+        ax.plot(np.append(pit_outline[:, 0], pit_outline[0, 0]),
+                np.append(pit_outline[:, 1], pit_outline[0, 1]),
+                "-", color="firebrick", linewidth=2, label="Pit outline")
+    if raw_path:
+        raw_path_m = np.array([(c / resolution, r / resolution) for r, c in raw_path])
+        ax.plot(raw_path_m[:, 0], raw_path_m[:, 1], "-", color="lightgray", linewidth=1,
+                label=f"Raw A* ({len(raw_path)} pts)")
+    ax.plot(path_m[:, 0], path_m[:, 1], "-", color="#2a78d6", linewidth=2, label="Path")
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    ax.set_aspect("equal")
+    ax.set_xlabel("X [m]")
+    ax.set_ylabel("Y [m]")
+    ax.legend(loc="best")
+    ax.set_title("Hazards along the route (vectorized -- zoom freely, no resolution limit)")
+    plt.tight_layout()
+else:
+    print(f"\nNo {hazards_path.name} for this run (predates hazard export) -- skipping vectorized hazard plot")
 
 plt.show()

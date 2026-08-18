@@ -1,4 +1,5 @@
 from pathlib import Path
+import numpy as np
 from src.globalplanner import path_planning_multi
 from src.operation import marius_hills_review
 from src.operation import marius_hills_mission
@@ -134,6 +135,21 @@ experiment = {
 
 run_id, run_dir = run_registry.start_run()
 
+# Exact vector hazard/context geometry (crater+boulder centers/radii, pit
+# outline -- not the rasterized grid) for this specific run -- lightweight
+# compared to the grid itself, and lets analyze_run.py re-render obstacles
+# with no resolution ceiling (unlike the baked-raster background in
+# Route_Plot.html/.png) without needing to reload/regenerate the whole map
+# later.
+np.savez_compressed(
+    run_dir / "Hazards.npz",
+    boulder_centers_m=map_data.get("boulder_centers_m", np.empty((0, 2))),
+    boulder_radii_m=map_data.get("boulder_radii_m", np.empty((0,))),
+    crater_centers_m=map_data.get("crater_centers_m", np.empty((0, 2))),
+    crater_radii_m=map_data.get("crater_radii_m", np.empty((0,))),
+    pit_outline_m=map_data.get("pit_outline_m", np.empty((0, 2))),
+)
+
 waypoint_picker.save_route_plot(
     map_data["planning_grid"], path, map_data["planning_resolution"], run_dir / "Route_Plot.png",
     waypoints=clicked_waypoints, special_waypoints=special_waypoints, start=start,
@@ -177,6 +193,26 @@ if marius_hills_config.config.get("crop_size_m"):  # crop_center_m always resolv
         crop_center_m=crop_center_m,
         crop_size_m=marius_hills_config.config["crop_size_m"],
         dpi=marius_hills_config.config.get("crop_dpi", 600))
+
+if marius_hills_config.config.get("interactive_crop_size_m"):
+    # same idea as the static crop above, but interactive: cropping to a
+    # small area spends the background raster's whole pixel budget on it
+    # instead of the full map, so fine detail (corridor band, small
+    # boulders) is actually visible when you zoom in -- see
+    # waypoint_picker.save_route_plot_interactive
+    waypoint_picker.save_route_plot_interactive(
+        map_data["planning_grid"], path, map_data["planning_resolution"], run_dir / "Route_Plot_Crop.html",
+        waypoints=clicked_waypoints, special_waypoints=special_waypoints, start=start,
+        landing_zone_radius_m=marius_hills_config.config.get("landing_zone_radius_m"),
+        start_area_radius_m=marius_hills_config.config.get("start_area_radius_m"),
+        start_circle_center_m=start_circle_center_m,
+        start_circle_radius_m=marius_hills_config.config.get("start_circle_radius_m"),
+        boulder_centers_m=map_data.get("boulder_centers_m"),
+        boulder_radii_m=map_data.get("boulder_radii_m"),
+        boulder_safety_margin_m=marius_hills_config.config.get("boulder_safety_margin_m"),
+        corridor_width_m=marius_hills_config.config.get("robot_corridor_width_m"),
+        crop_center_m=crop_center_m,
+        crop_size_m=marius_hills_config.config["interactive_crop_size_m"])
 
 mission = marius_hills_mission.run_mission_planning(
     experiment, mission_ops_config.config, robot_time_config.config, robot_power_config.config,

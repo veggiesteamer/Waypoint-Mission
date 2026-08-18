@@ -44,6 +44,14 @@ config = {
     "crop_size_m": 600,
     "crop_dpi": 600,
 
+    # interactive (zoomable HTML) equivalent of the crop above, saved as
+    # Route_Plot_Crop.html -- see waypoint_picker.save_route_plot_interactive.
+    # Keep this well below crop_size_m: the background raster's fixed pixel
+    # budget (figsize x background_dpi) is spread over this whole square, so
+    # a smaller crop = more pixels per meter = sharper corridor/boulders
+    # once you zoom in. None disables it.
+    "interactive_crop_size_m": 200,
+
     # Seed for the synthetic crater/boulder distributions below (see
     # distribution_generator.center_radius_generator_distribution) -- None
     # means fresh/different craters+boulders every time the map is

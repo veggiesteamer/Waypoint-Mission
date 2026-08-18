@@ -91,15 +91,20 @@ def _polygon_centroid(vertices_m):
     return float(cx), float(cy)
 
 
-def _pit_centroid_m(config):
+def _pit_outline_m(config):
     """
-    Pit outline's centroid, in map meters -- cheap to (re)compute from the
+    Pit boundary polygon, in map meters -- cheap to (re)compute from the
     source CSV/JSON each call, independent of the (potentially cached)
     rasterized grid -- see load_or_generate_map.
     """
     _, _, mhp_frame = load_mhp_craters(config["csv_path"])
     pit_outline = load_mhp_pit_outline(config["pit_outline_path"], mhp_frame)
-    return _polygon_centroid(pit_outline * config["map_size_m"])
+    return pit_outline * config["map_size_m"]
+
+
+def _pit_centroid_m(config):
+    """Pit outline's centroid, in map meters -- see _pit_outline_m."""
+    return _polygon_centroid(_pit_outline_m(config))
 
 
 def save_path_plot(grid, path, output_path):
@@ -212,11 +217,18 @@ def generate_map(config, dist_image_path="Marius_Hills_Mapped.png",
         "map_resolution": map_resolution,
         "grid_occupation": grid_occupation,
         "num_mhp_craters": len(radius_MHP),
-        # boulder positions/radii in meters, for drawing a safety-margin halo
-        # around each one on top of the (per-object-identity-free) binary grid
+        # boulder/crater positions+radii in meters -- the exact vector
+        # geometry the (per-object-identity-free) binary grid was
+        # rasterized from, e.g. for drawing a safety-margin halo around
+        # each boulder, or for a fully vectorized (not raster-resolution-
+        # limited) re-render elsewhere -- see plan_waypoint_mission.py's
+        # per-run Hazards.npz and analyze_run.py's vectorized hazard plot
         "boulder_centers_m": center_boulder * map_distance_meter,
         "boulder_radii_m": radius_boulder,
+        "crater_centers_m": center_crater * map_distance_meter,
+        "crater_radii_m": radius_crater,
         "pit_centroid_m": pit_centroid_m,
+        "pit_outline_m": pit_outline * map_distance_meter,
     }
 
 
@@ -232,11 +244,13 @@ def load_or_generate_map(config, cache_path, dist_image_path="Marius_Hills_Mappe
     cache_path = Path(cache_path)
     if cache_path.exists():
         with np.load(cache_path) as data:
-            # boulder_centers_m/radii_m/pit_centroid_m predate older cache
-            # files -- fall back rather than KeyError so old caches keep
-            # loading (pit_centroid_m is cheap enough to just recompute from
-            # the source CSV/JSON instead of caching it at all)
+            # boulder_centers_m/radii_m/crater_centers_m/radii_m predate older
+            # cache files -- fall back rather than KeyError so old caches
+            # keep loading. pit_centroid_m/pit_outline_m are never cached at
+            # all -- cheap enough to just recompute from the source CSV/JSON
+            # every call instead.
             has_boulders = "boulder_centers_m" in data.files
+            has_craters = "crater_centers_m" in data.files
             return {
                 "grid": data["grid"],
                 "planning_grid": data["planning_grid"],
@@ -247,7 +261,10 @@ def load_or_generate_map(config, cache_path, dist_image_path="Marius_Hills_Mappe
                 "num_mhp_craters": int(data["num_mhp_craters"]),
                 "boulder_centers_m": data["boulder_centers_m"] if has_boulders else np.empty((0, 2)),
                 "boulder_radii_m": data["boulder_radii_m"] if has_boulders else np.empty((0,)),
+                "crater_centers_m": data["crater_centers_m"] if has_craters else np.empty((0, 2)),
+                "crater_radii_m": data["crater_radii_m"] if has_craters else np.empty((0,)),
                 "pit_centroid_m": _pit_centroid_m(config),
+                "pit_outline_m": _pit_outline_m(config),
             }
 
     map_data = generate_map(config, dist_image_path, raster_image_path)

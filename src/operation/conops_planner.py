@@ -11,7 +11,7 @@ ACTOR_COLORS = {"rover": "#2a78d6", "earth": "#eb6834"}
 # in within generate_waypoint_tasks -- not every task appears in every leg
 # (turn/localization turn are conditional), so row order can't just follow
 # first-appearance while scanning the whole timeline chronologically
-TASK_ROW_ORDER = ["Walk", "turn", "localization turn", "Locomotion Test",
+TASK_ROW_ORDER = ["Egress & Commissioning", "Walk", "turn", "localization turn", "Locomotion Test",
                    "Situational Picture", "Nav Downlink",
                    "GRAV measurement", "SPEC measurement",
                    "SciCAM measurement", "Payload Downlink", "nap", "earth_analysis", "uplink"]
@@ -240,10 +240,20 @@ def generate_waypoint_tasks(start_time, travel_time, turn_time, config_time, con
 
 def build_mission(segments, velocity, config_time, config_power_robot, localization_interval=None,
                    phase_params=None, nap_curve=None, mission_start_lunar_hour=0.0,
-                   lunar_day_hours=708.7, locomotion_experiment=None, locomotion_config=None):
+                   lunar_day_hours=708.7, locomotion_experiment=None, locomotion_config=None,
+                   egress_commissioning=None):
     """
     segments: list of {"distance": meters, "turns": count}, one per drive leg
     between measurement/downlink stops (see path_analyzer.build_drive_segments).
+
+    egress_commissioning: optional {"duration_s": ..., "energy_wh": ...} (see
+    mission_ops_config.py) -- a single fixed-cost "Egress & Commissioning"
+    task inserted right at the start of the timeline (t=0), before any drive
+    segment. mission_start_lunar_hour anchors to t=0 (landing), so this
+    pushes when the actual traverse/ops begins later in the lunar day by
+    however long egress/commissioning takes -- nap_curve timing (driven by
+    real elapsed t) accounts for that automatically. None (default) skips it,
+    same as before this parameter existed.
 
     localization_interval: force a "localization turn" every Nth measurement
     (each segment generates exactly one stop, so this is equivalently every
@@ -278,6 +288,13 @@ def build_mission(segments, velocity, config_time, config_power_robot, localizat
 
     timeline = []
     t = 0
+
+    if egress_commissioning:
+        duration = egress_commissioning["duration_s"]
+        power_w = egress_commissioning["energy_wh"] * 3600 / duration
+        timeline.append(Task("Egress & Commissioning", "rover", t, t + duration, phase=0, power_w=power_w))
+        t += duration
+
     measurement_count = 0
     special_occurrence_count = 0
     locomotion_trigger_occurrences = set(
@@ -351,7 +368,7 @@ def plot_timeline2(tasks):
 
     plt.show()
 
-def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
+def plot_timeline(tasks, show=True, velocity=None, phase_names=None, time_offset_h=0.0):
     """
     velocity: rover drive speed [m/s]. If given, each "drive" bar is
     annotated with the distance covered in that leg (distance = velocity *
@@ -360,7 +377,15 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
     phase_names: names for task.phase 0, 1, ... (see marius_hills_mission.
     run_mission_planning). If given, a faint dashed line marks each phase
     change, labeled with the phase it's entering.
+
+    time_offset_h: shifts every plotted position (not durations/widths) by
+    this many hours -- e.g. mission_config.mission_start_lunar_hour, so the
+    axis reads as absolute lunar-day time instead of always starting at 0.
+    Purely a display shift; doesn't change any task's actual start/end.
     """
+    def to_min(t_seconds):
+        return t_seconds / 60 + time_offset_h * 60
+
     # row order follows TASK_ROW_ORDER (names not on that list, if any,
     # fall back to first-appearance order at the bottom)
     present = dict.fromkeys(task.name for task in tasks)
@@ -374,8 +399,7 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
 
     cumulative_distance_m = 0.0
     for task in tasks:
-        unit = 60 #transform from seconds to minutes
-        start_time = task.start / 60
+        start_time = to_min(task.start)
         duration_time = (task.end - task.start) / 60
 
         y = y_map[task.name]
@@ -395,7 +419,7 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
 
     ax.set_yticks(list(y_map.values()))
     ax.set_yticklabels(list(y_map.keys()))
-    ax.set_xlabel("Time [min]")
+    ax.set_xlabel(f"Time [min] (lunar hour {time_offset_h:.1f} onward)" if time_offset_h else "Time [min]")
     if velocity is not None:
         ax.set_title(f"Total distance driven: {cumulative_distance_m:.0f} m")
 
@@ -403,7 +427,7 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
     # so consecutive stops are easy to tell apart at a glance
     for task in tasks:
         if task.name == "Walk":
-            ax.axvline(task.start / 60, color="#c3c2b7", linewidth=0.6, alpha=0.4, zorder=0)
+            ax.axvline(to_min(task.start), color="#c3c2b7", linewidth=0.6, alpha=0.4, zorder=0)
 
     # phase-change markers: a faint dashed line at the midpoint between the
     # last task of one phase and the first task of the next (tasks aren't
@@ -412,8 +436,8 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
     # start -- so the midpoint keeps the line out of either stop's bars)
     phases_present = sorted(set(task.phase for task in tasks))
     for p0, p1 in zip(phases_present[:-1], phases_present[1:]):
-        p0_end = max(task.end for task in tasks if task.phase == p0) / 60
-        p1_start = min(task.start for task in tasks if task.phase == p1) / 60
+        p0_end = to_min(max(task.end for task in tasks if task.phase == p0))
+        p1_start = to_min(min(task.start for task in tasks if task.phase == p1))
         boundary = (p0_end + p1_start) / 2
         ax.axvline(boundary, color="#898781", linestyle="--", linewidth=1, alpha=0.6, zorder=0)
         if phase_names and p1 < len(phase_names):
@@ -431,14 +455,20 @@ def plot_timeline(tasks, show=True, velocity=None, phase_names=None):
     return fig
 
 
-def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
+def plot_timeline_interactive(tasks, velocity=None, phase_names=None, time_offset_h=0.0):
     """
     Interactive Plotly equivalent of plot_timeline, saved as a self-contained
     .html file (see marius_hills_mission.run_mission_planning). Opens in a
     browser with the same scroll-to-zoom/drag-to-pan behavior as the live
     matplotlib window -- unlike a static PNG/PDF, the axis re-renders at
     whatever zoom level you're at, so it never runs out of legible ticks.
+
+    time_offset_h: see plot_timeline -- shifts every plotted position (not
+    durations) by this many hours, e.g. mission_config.mission_start_lunar_hour.
     """
+    def to_min(t_seconds):
+        return t_seconds / 60 + time_offset_h * 60
+
     present = dict.fromkeys(task.name for task in tasks)
     names = [n for n in TASK_ROW_ORDER if n in present]
     names += [n for n in present if n not in names]
@@ -451,9 +481,9 @@ def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
         if not actor_tasks:
             continue
 
-        starts_min = [t.start / 60 for t in actor_tasks]
+        starts_min = [to_min(t.start) for t in actor_tasks]
         durations_min = [(t.end - t.start) / 60 for t in actor_tasks]
-        hover = [f"{t.name}<br>start: {t.start / 60:.1f} min<br>"
+        hover = [f"{t.name}<br>start: {to_min(t.start):.1f} min<br>"
                  f"duration: {(t.end - t.start) / 60:.1f} min<br>power: {t.power_w:.1f} W"
                  for t in actor_tasks]
 
@@ -470,20 +500,20 @@ def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
                 leg_distance_m = velocity * (t.end - t.start)
                 cumulative_distance_m += leg_distance_m
                 fig.add_annotation(
-                    x=(t.start + (t.end - t.start) / 2) / 60, y=t.name,
+                    x=to_min(t.start + (t.end - t.start) / 2), y=t.name,
                     text=f"{leg_distance_m:.0f} m", showarrow=False, font=dict(size=14))
 
     # thin, faint separator at the start of every stop (marked by "Walk"),
     # so consecutive stops are easy to tell apart at a glance
     for t in tasks:
         if t.name == "Walk":
-            fig.add_vline(x=t.start / 60, line_color="#c3c2b7", line_width=0.6,
+            fig.add_vline(x=to_min(t.start), line_color="#c3c2b7", line_width=0.6,
                            opacity=0.4, layer="below")
 
     phases_present = sorted(set(task.phase for task in tasks))
     for p0, p1 in zip(phases_present[:-1], phases_present[1:]):
-        p0_end = max(task.end for task in tasks if task.phase == p0) / 60
-        p1_start = min(task.start for task in tasks if task.phase == p1) / 60
+        p0_end = to_min(max(task.end for task in tasks if task.phase == p0))
+        p1_start = to_min(min(task.start for task in tasks if task.phase == p1))
         boundary = (p0_end + p1_start) / 2
         fig.add_vline(x=boundary, line_dash="dash", line_color="#898781", opacity=0.6)
         if phase_names and p1 < len(phase_names):
@@ -494,7 +524,7 @@ def plot_timeline_interactive(tasks, velocity=None, phase_names=None):
     fig.update_layout(
         barmode="overlay",
         yaxis=dict(categoryorder="array", categoryarray=names),
-        xaxis_title="Time [min]",
+        xaxis_title=f"Time [min] (lunar hour {time_offset_h:.1f} onward)" if time_offset_h else "Time [min]",
         title=f"Total distance driven: {cumulative_distance_m:.0f} m" if velocity is not None else None,
         legend_title_text="Actor",
         height=600, width=1400,

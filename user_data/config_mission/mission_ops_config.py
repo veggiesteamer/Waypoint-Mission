@@ -28,16 +28,16 @@ config = {
         0: {"min_distance": 8, "max_distance": 12, "num_pictures": 1,
             "task_intervals": {
                 "grav_measurement": 1,
-                "spec_measurement": 0.1,
-                "scicam_measurement": 0.5,
+                "spec_measurement": 10,
+                "scicam_measurement": 2,
                 "relay": 1,
             }},
         1: {"min_distance": 1, "max_distance": 3, "num_pictures": 1,
             "task_intervals": {
-                "grav_measurement": 0.2,
-                "spec_measurement": 0.01,
-                "scicam_measurement": 0.2,
-                "relay": 0.2,
+                "grav_measurement": 3,
+                "spec_measurement": 10,
+                "scicam_measurement": 5,
+                "relay": 1,
             },
             # Display name for special stops in the mission report/summary
             # (see marius_hills_mission.generate_mission_report) -- shown as
@@ -78,23 +78,36 @@ config = {
     # route -- see conops_planner.build_mission). Set to None to disable.
     "localization_interval_measurements": 3,
 
+    # One-time block at the very start of the timeline (t=0, before any
+    # drive segment) -- rover egress from the lander + initial system
+    # commissioning. Costs a fixed amount of time/energy but isn't a
+    # drive/measurement activity, so it's not part of any phase's stop
+    # sequence (see conops_planner.build_mission). duration_s/energy_wh set
+    # the block directly -- power_w is derived, same convention as
+    # locomotion_experiment_config.py. Placeholder values below -- tune to
+    # the real egress/commissioning timeline. Set to None to disable.
+    "egress_commissioning": {"duration_s": 12 * 3600, "energy_wh": 20},
+
     # Nap duration follows a lunar-day thermal/power cycle instead of the
     # flat robot_time_config.nap_time -- see conops_planner.nap_duration_s.
     # Real synodic lunar day (sunrise to sunrise); local solar noon sits at
-    # a quarter of the way through it. mission_start_lunar_hour is where
-    # your mission begins on that clock -- 0 = starting right at sunrise.
-    # Set nap_curve to None to go back to the flat nap_time.
+    # a quarter of the way through it. mission_start_lunar_hour anchors to
+    # *landing* (t=0, the start of egress_commissioning above, if set) --
+    # 0 = landing right at sunrise -- not to when ops/traverse actually
+    # begins, which is mission_start_lunar_hour + egress_commissioning's
+    # duration if that's set. Set nap_curve to None to go back to the flat
+    # nap_time.
     "lunar_day_hours": 708.7,
-    "mission_start_lunar_hour": 0,
+    "mission_start_lunar_hour": 12,
     "nap_curve": {
         # longer naps while recharging shortly after sunrise
         "morning_peak_hour": 24,
-        "morning_peak_amplitude_s": 300,
+        "morning_peak_amplitude_s": 30*60,
         "morning_peak_width_h": 15,
         # longer naps for extra cooldown around local solar noon
         # (708.7 / 4 = 177.2)
         "noon_peak_hour": 177.2,
-        "noon_peak_amplitude_s": 300,
+        "noon_peak_amplitude_s": 30*60,
         "noon_peak_width_h": 20,
     },
 

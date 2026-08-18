@@ -220,15 +220,20 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     # experiment_tasks).
     locomotion_experiment = mission_config.get("locomotion_experiment")
 
+    # One-time egress/commissioning block at t=0, before any drive segment
+    # (see conops_planner.build_mission).
+    egress_commissioning = mission_config.get("egress_commissioning")
+
     velocity = mission_config["robot_velocity"]
     timeline = conops_planner.build_mission(
         segments, velocity, robot_time_config, robot_power_config,
         localization_interval=localization_interval, phase_params=phase_params,
         nap_curve=nap_curve, mission_start_lunar_hour=mission_start_lunar_hour,
         lunar_day_hours=lunar_day_hours, locomotion_experiment=locomotion_experiment,
-        locomotion_config=locomotion_config)
+        locomotion_config=locomotion_config, egress_commissioning=egress_commissioning)
 
-    fig = conops_planner.plot_timeline(timeline, show=False, velocity=velocity, phase_names=phase_names)
+    fig = conops_planner.plot_timeline(timeline, show=False, velocity=velocity, phase_names=phase_names,
+                                        time_offset_h=mission_start_lunar_hour)
     fig.savefig(timeline_image_path, dpi=300)
     plt.close(fig)
 
@@ -237,7 +242,7 @@ def run_mission_planning(experiment, mission_config, robot_time_config, robot_po
     # the axis stays legible at any zoom level (a static PNG/PDF can't do
     # that: its ticks are baked in for the full-timeline view)
     interactive_fig = conops_planner.plot_timeline_interactive(
-        timeline, velocity=velocity, phase_names=phase_names)
+        timeline, velocity=velocity, phase_names=phase_names, time_offset_h=mission_start_lunar_hour)
     interactive_fig.write_html(Path(timeline_image_path).with_suffix(".html"))
 
     special_sequence_name = (phase_params or {}).get(1, {}).get("special_sequence_name")

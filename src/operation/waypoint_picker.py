@@ -461,6 +461,8 @@ def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], r
                                  boulder_radii_m: Optional[np.ndarray] = None,
                                  boulder_safety_margin_m: Optional[float] = None,
                                  corridor_width_m: Optional[float] = None,
+                                 crop_center_m: Optional[Tuple[float, float]] = None,
+                                 crop_size_m: Optional[float] = None,
                                  background_dpi: int = 400):
     """
     Interactive Plotly equivalent of save_route_plot, saved as a
@@ -477,20 +479,40 @@ def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], r
     embedded as a fixed background. The actual route -- path, waypoints,
     start/landing/start-circle zones -- is redrawn as live Plotly
     traces/shapes on top, so those stay crisp and hoverable at any zoom.
-    Background image detail is capped by background_dpi: zooming far enough
-    past that will start to blur the grid/halos even though the overlay
-    keeps its own resolution.
+    Background image detail is capped by background_dpi (pixels are spread
+    over the full map by default): zooming far enough past that will start
+    to blur the grid/halos/corridor even though the overlay keeps its own
+    resolution -- e.g. at the default background_dpi/figsize, a 2200 m map
+    only gets ~1.8 px/m, well under a metre-scale corridor band's width.
+
+    crop_center_m/crop_size_m: like save_route_plot's same-named params --
+    if given, the background raster (and the view's initial pan/zoom
+    window) is restricted to a crop_size_m x crop_size_m square around
+    crop_center_m instead of the full map, so the same pixel budget
+    (background_dpi x figsize) lands on a much smaller area -- e.g. a 200 m
+    crop gets ~20 px/m at the default settings, comfortably sharper than
+    the grid's own native resolution. The image simply doesn't extend past
+    the crop, so panning beyond it shows blank canvas -- this is meant as a
+    detail view, not a replacement for the full-map file.
     """
     height_m = grid.shape[0] / resolution
     width_m = grid.shape[1] / resolution
 
     bg_fig, bg_ax = plt.subplots(figsize=(10, 10))
-    bg_ax.set_position([0, 0, 1, 1])  # fill the whole figure so the raster maps 1:1 onto [0,width_m]x[0,height_m]
+    bg_ax.set_position([0, 0, 1, 1])  # fill the whole figure so the raster maps 1:1 onto the view below
     _draw_map_meters(bg_ax, grid, resolution)
     _draw_boulder_safety_halos(bg_ax, boulder_centers_m, boulder_radii_m, boulder_safety_margin_m)
     _draw_path_corridor(bg_ax, path, resolution, corridor_width_m)
-    bg_ax.set_xlim(0, width_m)
-    bg_ax.set_ylim(0, height_m)
+
+    if crop_center_m is not None and crop_size_m is not None:
+        half = crop_size_m / 2
+        img_x0, img_x1 = crop_center_m[0] - half, crop_center_m[0] + half
+        img_y0, img_y1 = crop_center_m[1] - half, crop_center_m[1] + half
+    else:
+        img_x0, img_x1 = 0, width_m
+        img_y0, img_y1 = 0, height_m
+    bg_ax.set_xlim(img_x0, img_x1)
+    bg_ax.set_ylim(img_y0, img_y1)
     bg_ax.axis("off")
     buf = io.BytesIO()
     bg_fig.savefig(buf, format="png", dpi=background_dpi)
@@ -500,8 +522,8 @@ def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], r
     fig = go.Figure()
     fig.add_layout_image(dict(
         source=background_uri, xref="x", yref="y",
-        x=0, y=height_m, xanchor="left", yanchor="top",
-        sizex=width_m, sizey=height_m, sizing="stretch", layer="below"))
+        x=img_x0, y=img_y1, xanchor="left", yanchor="top",
+        sizex=img_x1 - img_x0, sizey=img_y1 - img_y0, sizing="stretch", layer="below"))
 
     def add_circle(center_m, radius_m, color, fill_alpha=None, dash=None):
         if center_m is None or not radius_m:
@@ -545,8 +567,8 @@ def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], r
                 mode="markers+text", text=[str(i) for i, _ in group], textposition="top center",
                 marker=dict(color=color, size=12, line=dict(color="black", width=1)), name=name))
 
-    fig.update_xaxes(range=[0, width_m], title="X [m]", constrain="domain")
-    fig.update_yaxes(range=[0, height_m], title="Y [m]", scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(range=[img_x0, img_x1], title="X [m]", constrain="domain")
+    fig.update_yaxes(range=[img_y0, img_y1], title="Y [m]", scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=f"Planned Route (resolution: {resolution:.2f} px/m)",
         height=900, width=900,
