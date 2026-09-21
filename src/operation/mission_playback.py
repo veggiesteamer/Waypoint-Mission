@@ -74,7 +74,8 @@ def show_mission_playback(grid: np.ndarray, path: List[Tuple[int, int]], resolut
                            boulder_safety_margin_m: Optional[float] = None,
                            corridor_width_m: Optional[float] = None,
                            crop_center_m: Optional[Tuple[float, float]] = None,
-                           crop_size_m: Optional[float] = None):
+                           crop_size_m: Optional[float] = None,
+                           time_offset_h: float = 0.0):
     """
     Experimental. Opens a two-panel window: the map with the planned route
     on top, the task timeline (Gantt-style, as in conops_planner.plot_timeline)
@@ -85,6 +86,15 @@ def show_mission_playback(grid: np.ndarray, path: List[Tuple[int, int]], resolut
     to a crop_size_m x crop_size_m square around crop_center_m instead of the
     full map -- it's still a live matplotlib axes, so the toolbar can zoom/pan
     it further or back out to the full map at any time.
+
+    time_offset_h: shifts the timeline panel's displayed axis (not the
+    underlying task start/end, which stay relative to mission start) by this
+    many hours -- e.g. mission_config.mission_start_lunar_hour, same
+    parameter/meaning as conops_planner.plot_timeline/plot_timeline_interactive
+    and marius_hills_mission._report_to_excel. Without this, the axis and
+    hover readout always start at 0 regardless of when the mission actually
+    starts in the lunar day, out of step with every other rendering of the
+    same timeline. 0.0 (default) keeps that original behavior.
     """
     cum_dist_m = cumulative_path_distance_m(path, resolution)
 
@@ -116,15 +126,27 @@ def show_mission_playback(grid: np.ndarray, path: List[Tuple[int, int]], resolut
         ax_map.set_xlim(crop_center_m[0] - half, crop_center_m[0] + half)
         ax_map.set_ylim(crop_center_m[1] - half, crop_center_m[1] + half)
 
+    # to_min/from_min: display <-> underlying-task-time conversion, same
+    # time_offset_h convention as conops_planner.plot_timeline's own to_min
+    # -- task.start/end (and everything distance_at_time computes from them)
+    # stay relative to mission start (t=0); only the displayed axis and the
+    # hover readout are shifted, so this has to be inverted before feeding
+    # a hovered x back into distance_at_time.
+    def to_min(t_seconds):
+        return t_seconds / 60 + time_offset_h * 60
+
+    def from_min(t_min):
+        return (t_min - time_offset_h * 60) * 60
+
     names = list(dict.fromkeys(_task_field(t, "name") for t in timeline))
     y_map = {name: i for i, name in enumerate(names)}
     for task in timeline:
-        start_min = _task_field(task, "start") / 60
+        start_min = to_min(_task_field(task, "start"))
         duration_min = (_task_field(task, "end") - _task_field(task, "start")) / 60
         ax_time.broken_barh([(start_min, duration_min)], (y_map[_task_field(task, "name")] - 0.4, 0.5))
     ax_time.set_yticks(list(y_map.values()))
     ax_time.set_yticklabels(list(y_map.keys()))
-    ax_time.set_xlabel("Time [min]")
+    ax_time.set_xlabel(f"Time [min] (lunar hour {time_offset_h:.1f} onward)" if time_offset_h else "Time [min]")
     ax_time.set_title("Hover here to scrub through the mission")
 
     cursor_line = ax_time.axvline(0, color="magenta", linewidth=1, visible=False)
@@ -133,7 +155,7 @@ def show_mission_playback(grid: np.ndarray, path: List[Tuple[int, int]], resolut
         if event.inaxes != ax_time or event.xdata is None:
             return
 
-        t_s = event.xdata * 60
+        t_s = from_min(event.xdata)
         cursor_line.set_xdata([event.xdata, event.xdata])
         cursor_line.set_visible(True)
 
@@ -142,7 +164,8 @@ def show_mission_playback(grid: np.ndarray, path: List[Tuple[int, int]], resolut
         x_m, y_m = _grid_to_m(row, col, resolution)
 
         cursor_marker.set_data([x_m], [y_m])
-        info_text.set_text(f"t = {t_s / 60:.1f} min\ndistance driven = {distance_m:.0f} m")
+        lunar_hour_note = f" (lunar hour {t_s / 3600 + time_offset_h:.1f})" if time_offset_h else ""
+        info_text.set_text(f"t = {t_s / 60:.1f} min{lunar_hour_note}\ndistance driven = {distance_m:.0f} m")
 
         fig.canvas.draw_idle()
 

@@ -56,12 +56,21 @@ def load_waypoints(path) -> Tuple[Optional[Tuple[int, int]], List[Tuple[int, int
     return start, [tuple(wp) for wp in data["waypoints"]]
 
 
-def save_special_waypoints(path, special_waypoints: List[Tuple[int, int]]):
-    Path(path).write_text(json.dumps(special_waypoints))
+def save_special_waypoints(path, categorized_waypoints: dict):
+    Path(path).write_text(json.dumps(categorized_waypoints))
 
 
-def load_special_waypoints(path) -> List[Tuple[int, int]]:
-    return [tuple(wp) for wp in json.loads(Path(path).read_text())]
+def load_special_waypoints(path) -> dict:
+    """
+    Returns {category_key: [waypoints]} (see pick_special_waypoints). A
+    saved file that predates categories (a plain list, all "special" --
+    i.e. Pit Wall Inspection) loads as {"special": [...]}, with every other
+    known category defaulting to empty.
+    """
+    data = json.loads(Path(path).read_text())
+    if isinstance(data, list):  # legacy format: flat list, all "special"
+        return {"special": [tuple(wp) for wp in data]}
+    return {key: [tuple(wp) for wp in wps] for key, wps in data.items()}
 
 
 def _draw_map_meters(ax, grid: np.ndarray, resolution: float):
@@ -302,6 +311,32 @@ def pick_waypoints(grid: np.ndarray, resolution: float, start: Optional[Tuple[in
     return picked["start"], waypoints
 
 
+# (category key, default display label, marker color) cycled through by
+# pick_special_waypoints on each click of an already-placed waypoint marker:
+# unmarked (yellow) -> "special" (magenta, Pit Wall Inspection -- see
+# mission_ops_config.phase_params[1]["special_sequence"]) -> "grav_dense_center"
+# (cyan, anchor for a denser GRAV-measurement window -- see
+# path_analyzer.build_drive_segments' grav_dense_trigger_idxs) -> back to
+# unmarked. Add more entries here (and to the legend below) for future
+# waypoint categories -- the picker itself is fully generic over this list.
+SPECIAL_WAYPOINT_CATEGORIES = [
+    ("special", "Pit Wall Inspection", "magenta"),
+    ("grav_dense_center", "GRAV Dense Center", "cyan"),
+]
+
+
+def _waypoint_colors(categorized_waypoints: Optional[dict], categories=None) -> dict:
+    """{waypoint: color} for every categorized waypoint (see
+    pick_special_waypoints/SPECIAL_WAYPOINT_CATEGORIES) -- look up with
+    .get(wp, "yellow") for the plain/unmarked default."""
+    categories = categories or SPECIAL_WAYPOINT_CATEGORIES
+    color_by_wp = {}
+    for key, _, color in categories:
+        for wp in (categorized_waypoints or {}).get(key) or []:
+            color_by_wp[tuple(wp)] = color
+    return color_by_wp
+
+
 def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[Tuple[int, int]],
                             start: Optional[Tuple[int, int]] = None,
                             landing_zone_radius_m: Optional[float] = None,
@@ -312,21 +347,25 @@ def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[
                             boulder_radii_m: Optional[np.ndarray] = None,
                             boulder_safety_margin_m: Optional[float] = None,
                             click_radius_m: float = 3.0,
-                            title: str = "Click a waypoint to mark it special (toggles) "
-                                         "- close window when done"
-                            ) -> List[Tuple[int, int]]:
+                            categories: Optional[List[Tuple[str, str, str]]] = None,
+                            title: Optional[str] = None
+                            ) -> dict:
     """
     Show the already-picked route `waypoints` on the map (same context as
-    pick_waypoints) and let the user click on/near one to toggle whether
-    it's "special" -- a richer, independently-defined activity sequence
-    (see conops_planner.SPECIAL_STOP_TASK_SEQUENCE) runs at whichever
-    regular stop occurs at or after it instead of the normal one (only
-    takes effect in phase 1/pit_ops -- see path_analyzer.build_drive_segments'
-    special_trigger_idxs). A click only registers if it lands within
-    click_radius_m of an existing waypoint marker; anywhere else on the map
-    is ignored. Returns the subset of `waypoints` flagged special, in their
-    original order, once the figure window is closed.
+    pick_waypoints) and let the user click on/near one to cycle it through
+    `categories` (see SPECIAL_WAYPOINT_CATEGORIES for the default set and
+    what each one means) -- unmarked, then each category in order, then back
+    to unmarked. A click only registers if it lands within click_radius_m of
+    an existing waypoint marker; anywhere else on the map is ignored.
+
+    Returns {category_key: [waypoints]} for every category in `categories`
+    (empty list if nothing was marked into it), each in original route order.
     """
+    categories = categories or SPECIAL_WAYPOINT_CATEGORIES
+    if title is None:
+        cats = ", ".join(f"{label} ({key})" for key, label, _ in categories)
+        title = f"Click a waypoint to cycle: unmarked -> {cats} -> unmarked - close window when done"
+
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_map_meters(ax, grid, resolution)
     _draw_start_circle(ax, start_circle_center_m, start_circle_radius_m)
@@ -334,11 +373,11 @@ def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[
     _draw_zones(ax, start, resolution, landing_zone_radius_m, start_area_radius_m)
 
     waypoints_m = [_grid_to_m(r, c, resolution) for r, c in waypoints]
-    is_special = [False] * len(waypoints)
+    state = [0] * len(waypoints)  # 0 = unmarked, i = categories[i-1]
     markers = []
 
     def marker_color(i):
-        return "magenta" if is_special[i] else "yellow"
+        return categories[state[i] - 1][2] if state[i] else "yellow"
 
     for i, (x_m, y_m) in enumerate(waypoints_m):
         marker, = ax.plot(x_m, y_m, "o", color=marker_color(i), markeredgecolor="black",
@@ -347,6 +386,10 @@ def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[
                              xytext=(6, 6), color=marker_color(i), fontsize=17, weight="bold", zorder=6)
         markers.append((marker, label))
 
+    legend_handles = [plt.Line2D([0], [0], marker="o", color="none", markerfacecolor=color,
+                                  markeredgecolor="black", markersize=10, label=label)
+                       for _, label, color in categories]
+    ax.legend(handles=legend_handles, loc="upper right")
     ax.set_title(title)
 
     # Same click-vs-drag disambiguation as pick_waypoints: a placement only
@@ -374,7 +417,7 @@ def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[
         if dists[nearest_i] > click_radius_m:
             return  # click too far from any waypoint marker -- ignore
 
-        is_special[nearest_i] = not is_special[nearest_i]
+        state[nearest_i] = (state[nearest_i] + 1) % (len(categories) + 1)
         marker, label = markers[nearest_i]
         color = marker_color(nearest_i)
         marker.set_color(color)
@@ -386,12 +429,16 @@ def pick_special_waypoints(grid: np.ndarray, resolution: float, waypoints: List[
 
     plt.show()  # blocks until the window is closed
 
-    return [wp for wp, special in zip(waypoints, is_special) if special]
+    result = {key: [] for key, _, _ in categories}
+    for wp, s in zip(waypoints, state):
+        if s:
+            result[categories[s - 1][0]].append(wp)
+    return result
 
 
 def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: float, output_path,
                      waypoints: Optional[List[Tuple[int, int]]] = None,
-                     special_waypoints: Optional[List[Tuple[int, int]]] = None,
+                     special_waypoints: Optional[dict] = None,
                      start: Optional[Tuple[int, int]] = None,
                      landing_zone_radius_m: Optional[float] = None,
                      start_area_radius_m: Optional[float] = None,
@@ -412,8 +459,9 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
     instead of showing the full map -- combined with a higher dpi, this
     gives a detailed close-up without re-rasterizing anything (the source
     grid is unchanged, only the view and the output resolution change).
-    special_waypoints (a subset of `waypoints`, see pick_special_waypoints)
-    are drawn in magenta instead of yellow.
+    special_waypoints: {category_key: [waypoints]} (see
+    pick_special_waypoints/SPECIAL_WAYPOINT_CATEGORIES) -- each category's
+    waypoints are drawn in its own color instead of yellow.
     """
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_map_meters(ax, grid, resolution)
@@ -429,10 +477,10 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
         ax.plot(*path_m[-1], "ro", markersize=12, label="Goal")
 
     if waypoints:
-        special_set = set(special_waypoints) if special_waypoints else set()
+        color_by_wp = _waypoint_colors(special_waypoints)
         for i, (r, c) in enumerate(waypoints, start=1):
             x_m, y_m = _grid_to_m(r, c, resolution)
-            color = "magenta" if (r, c) in special_set else "yellow"
+            color = color_by_wp.get((r, c), "yellow")
             ax.plot(x_m, y_m, "o", color=color, markeredgecolor="black", markersize=10, zorder=5)
             ax.annotate(str(i), (x_m, y_m), textcoords="offset points",
                         xytext=(6, 6), color=color, fontsize=17, weight="bold", zorder=6)
@@ -451,7 +499,7 @@ def save_route_plot(grid: np.ndarray, path: List[Tuple[int, int]], resolution: f
 
 def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], resolution: float, output_path,
                                  waypoints: Optional[List[Tuple[int, int]]] = None,
-                                 special_waypoints: Optional[List[Tuple[int, int]]] = None,
+                                 special_waypoints: Optional[dict] = None,
                                  start: Optional[Tuple[int, int]] = None,
                                  landing_zone_radius_m: Optional[float] = None,
                                  start_area_radius_m: Optional[float] = None,
@@ -555,12 +603,14 @@ def save_route_plot_interactive(grid: np.ndarray, path: List[Tuple[int, int]], r
             marker=dict(color="red", size=14), name="Goal", hoverinfo="skip"))
 
     if waypoints:
-        special_set = set(special_waypoints) if special_waypoints else set()
-        regular = [(i, wp) for i, wp in enumerate(waypoints, start=1) if wp not in special_set]
-        special = [(i, wp) for i, wp in enumerate(waypoints, start=1) if wp in special_set]
-        for group, color, name in ((regular, "yellow", "Waypoint"), (special, "magenta", "Special waypoint")):
-            if not group:
-                continue
+        color_by_wp = _waypoint_colors(special_waypoints)
+        label_by_color = {color: label for _, label, color in SPECIAL_WAYPOINT_CATEGORIES}
+        groups = {}  # color -> (label, [(i, (r, c))])
+        for i, wp in enumerate(waypoints, start=1):
+            color = color_by_wp.get(wp, "yellow")
+            groups.setdefault(color, (label_by_color.get(color, "Waypoint"), []))[1].append((i, wp))
+
+        for color, (name, group) in groups.items():
             pts_m = [_grid_to_m(r, c, resolution) for _, (r, c) in group]
             fig.add_trace(go.Scatter(
                 x=[p[0] for p in pts_m], y=[p[1] for p in pts_m],

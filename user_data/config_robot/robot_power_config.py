@@ -4,11 +4,13 @@
 # All values in Watt.
 config = {
     "drive_power": 159.91,  # "Walking + GPR meas. duty cycled" (OPS-03)
-    "turn_power": 151.51,  # "Spot Turn"
+    "turn_power": 83.8,  # "Spot Turn" (OPS-23)
+    "standing_power": 12.0,  # "Standing in any pose (braking)" (OPS-07)
     "picture_power": 17.11,  # "NAV image capture" (OPS-10)
     "image_downlink_power": 15.41,  # "NAV downlink+ GRAV Spinup" (OPS-12-a)
     "grav_measurement_power": 15.01,  # "GRAV measurement" (OPS-13)
     "spec_measurement_power": 11.81,  # "SPEC measurement" (OPS-15)
+    "spec_warmup_power": 8.9,  # "SPEC warmup" (OPS-14)
     "scicam_measurement_power": 13.01,  # "SciCAM measurement" (OPS-17)
     "relay_power": 15.42,  # "Payload data downlink" (OPS-12-b)
     "nap_power": 5.0,  # "Nap" (OPS-20)

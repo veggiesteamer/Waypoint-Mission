@@ -39,4 +39,5 @@ mission_playback.show_mission_playback(
     boulder_safety_margin_m=map_config.get("boulder_safety_margin_m"),
     corridor_width_m=map_config.get("robot_corridor_width_m"),
     crop_center_m=map_config.get("crop_center_m"),
-    crop_size_m=map_config.get("crop_size_m"))
+    crop_size_m=map_config.get("crop_size_m"),
+    time_offset_h=config["mission_config"].get("mission_start_lunar_hour", 0.0))

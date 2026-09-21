@@ -89,14 +89,13 @@ waypoint,distances = path_analyzer.compute_waypoints3(path,step=10)
 tortuosity = path_analyzer.calculate_tortuosity(waypoint,distances)
 #path_planning_astar.visualize_path_and_distribution(grid,path,map_distance_meter,lunar_distribution_data,waypoint)
 
-# Mission timeline: stop every stop_distance_m (midpoint of the range) to take
+# Mission timeline: stop every stop_distance_min-stop_distance_max meters to take
 # a measurement and downlink data/picture; count turns per drive leg in between.
 stop_distance_min = 6 #m
 stop_distance_max = 10 #m
-stop_distance_m = (stop_distance_min + stop_distance_max) / 2
 
 turn_stats = path_analyzer.turn_analysis(path, map_resolution=map_resolution)
-segments = path_analyzer.build_drive_segments(path, map_resolution, stop_distance_m)
+segments = path_analyzer.build_drive_segments(path, map_resolution, (stop_distance_min, stop_distance_max))
 
 
 '''

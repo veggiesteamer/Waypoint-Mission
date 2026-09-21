@@ -17,6 +17,7 @@ EXCEL_PATH = Path("user_data/config_robot/Input_Conops.xlsx")
 SHEET_NAME = "Robot Time & Power"
 TIME_CONFIG_PATH = Path("user_data/config_robot/robot_time_config.py")
 POWER_CONFIG_PATH = Path("user_data/config_robot/robot_power_config.py")
+TASK_IDS_CONFIG_PATH = Path("user_data/config_robot/robot_task_ids_config.py")
 
 ACTOR_BY_SHEET_VALUE = {"Robot": "rover", "Ground": "earth"}
 
@@ -32,11 +33,13 @@ ROW_MAP_BY_ID = {
     "OPS-12-a": ("image_downlink", "Nav Downlink", "rover"),
     "OPS-13": ("grav_measurement", "GRAV measurement", "rover"),
     "OPS-15": ("spec_measurement", "SPEC measurement", "rover"),
+    "OPS-14": ("spec_warmup", "SPEC warmup", "rover"),
     "OPS-17": ("scicam_measurement", "SciCAM measurement", "rover"),
     "OPS-20": ("nap", "nap", "rover"),
     # takes the old "relay" slot (second Nav Downlink, right after the
     # first) -- the sheet replaced that row with this one
     "OPS-12-b": ("relay", "Payload Downlink", "rover"),
+    "OPS-07": ("standing", "standing", "rover"),
 }
 
 # Fallback for the rows the sheet gives no Task ID for -- matched on the
@@ -127,6 +130,32 @@ def _format_config(entries, value_field, suffix, extra_lines, header_note):
     return "\n".join(lines)
 
 
+def _format_task_ids_config(entries):
+    """
+    key -> the sheet's own Task ID (e.g. "OPS-10"), or None for rows the
+    sheet gives no ID for (Spot Turn/Mission Ops Decision/Uplink -- matched
+    by description instead, see ROW_MAP_BY_DESCRIPTION). Lets mission
+    output (Timeline/Activity Breakdown sheets, see marius_hills_mission.py)
+    cite the same IDs the source CONOPS uses, instead of just the internal
+    key or display name.
+    """
+    lines = [
+        f'# Generated from {EXCEL_PATH.as_posix()} (sheet "{SHEET_NAME}") by',
+        "# import_conops_excel.py -- re-run that script after updating the Excel;",
+        "# don't hand-edit the values below, edit the spreadsheet instead.",
+        "config = {",
+    ]
+    seen = set()
+    for e in entries:
+        if e["key"] in seen:
+            continue
+        seen.add(e["key"])
+        lines.append(f'    "{e["key"]}": {e["task_id"]!r},')
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     entries = load_rows()
 
@@ -139,8 +168,9 @@ def main():
         entries, "time_s", "time", [], "All values in seconds."), encoding="utf-8")
     POWER_CONFIG_PATH.write_text(_format_config(
         entries, "power_w", "power", [], "All values in Watt."), encoding="utf-8")
+    TASK_IDS_CONFIG_PATH.write_text(_format_task_ids_config(entries), encoding="utf-8")
 
-    print(f"Wrote {TIME_CONFIG_PATH} and {POWER_CONFIG_PATH}")
+    print(f"Wrote {TIME_CONFIG_PATH}, {POWER_CONFIG_PATH}, and {TASK_IDS_CONFIG_PATH}")
 
 
 if __name__ == "__main__":

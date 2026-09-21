@@ -15,7 +15,7 @@ def run_simulation(config):
     robot_footprint = config["robot_footprint"]
 
     blowup = config["blowup"]
-    stop_distance_m = (config["min_distance"] + config["max_distance"]) / 2
+    stop_distance_range = (config["min_distance"], config["max_distance"])
     robot_velocity = config["robot_velocity"]
 
     # crater production
@@ -63,7 +63,7 @@ def run_simulation(config):
     if success:
         stats = path_analyzer.turn_analysis(path, map_resolution=map_resolution)
 
-        segments = path_analyzer.build_drive_segments(path, map_resolution, stop_distance_m)
+        segments = path_analyzer.build_drive_segments(path, map_resolution, stop_distance_range)
         timeline = conops_planner.build_mission(segments, robot_velocity, robot_time_config.config, robot_power_config.config)
         mission_time_h = max(t.end for t in timeline) / 3600 if timeline else None
 
