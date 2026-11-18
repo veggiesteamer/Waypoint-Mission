@@ -8,3 +8,7 @@ experiments/marius_hills/
 experiments/missions/
 experiments/path_planning_demo/
 experiments/scenario_comparison/
+
+# South Pole run outputs and external data (not source)
+experiments/south_pole/
+OneDrive_2026-10-21/

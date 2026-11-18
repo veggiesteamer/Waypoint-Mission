@@ -1,5 +1,41 @@
 # Traversability Assessment
 
+## South Pole baseline mission (current work)
+
+`south_pole_sim.py` checks whether the science team's South Pole baseline mission
+fits one lunar day, and how much time, energy and data it needs. There is no map or
+path planning: walking time is distance × tortuosity ÷ speed.
+
+```
+python south_pole_sim.py [user_data/Input_Conops_v12.xlsx]
+```
+
+Everything is defined in the input workbook (`user_data/Input_Conops_v12.xlsx`):
+science table (Mission) → Activity map → Procedures → Modes, plus Phases and
+Parameters. The workbook's README and Open items sheets explain the model and list
+what is still missing. Formulas refer to parameters by name (e.g. `=90/turn_rate`)
+and are evaluated by the script, so the file does not need to be re-saved in Excel.
+
+Each run writes `experiments/south_pole/run_<timestamp>/` (not tracked by git):
+
+| File | Content |
+|---|---|
+| `summary.txt` | feasibility vs. the lunar-day window, energy, data, per-phase / per-mode / per-activity tables, images per science ID, outage-timing sweep, workbook consistency checks |
+| `stats.png` | one-page key numbers: stat tiles, time split, energy per mode |
+| `timeline_phases.png` | one panel per phase on a common time scale |
+| `data_overview.png` | onboard data (science / operator / housekeeping) over the mission |
+| `timeline.csv` | every step with start, duration, mode, power, energy, distance, data |
+
+Model in short: the robot runs strictly sequentially; every station walks, settles,
+takes NAV + full-resolution SciCAM + a compressed operator image, sends the operator
+data, does its assigned observations, naps, waits for the ground only if the decision
+is not back yet, then offloads. The ground decision runs in parallel. A 4 h comms
+outage every 24 h blocks downlink, ground decisions and walking.
+
+The Marius Hills waypoint workflow below is the previous mission and is kept for reference.
+
+---
+
 Lunar rover traversability and global path planning: hazard maps (craters, boulders,
 pit outlines) are rasterized into an occupancy grid, a rover route is planned across
 it with A*, and a mission timeline (drive/turn/downlink/measurement/nap) is derived
